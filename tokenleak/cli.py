@@ -197,16 +197,36 @@ def cmd_scan(
     console.print("[bold green]Done.[/bold green]")
 
 
+def _check_ai(config: Config) -> str:
+    """Send a minimal request to the AI API and return a status string."""
+    from tokenleak.agent.client import build_client
+    try:
+        client = build_client(config)
+        client.chat.completions.create(
+            model=config.ai_model,
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+        )
+        return f"[green]available[/green] ({config.ai_provider} / {config.ai_model})"
+    except Exception as exc:
+        short = str(exc).split("\n")[0][:80]
+        return f"[red]unavailable[/red] — {short}"
+
+
 def cmd_status(config: Config) -> None:
     db = create_db(config)
     db.connect()
     s = db.summary()
     db.close()
 
+    with console.status("[dim]Checking AI API…[/dim]", spinner="dots"):
+        ai_status = _check_ai(config)
+
     table = Table(title="TokenLeak Status", show_header=False, box=None)
     table.add_column("Key", style="bold cyan")
     table.add_column("Value")
 
+    table.add_row("AI provider", ai_status)
     table.add_row("Repositories", str(s["repos"]))
     for status, count in sorted((s.get("scans") or {}).items()):
         table.add_row(f"  Scans ({status})", str(count))

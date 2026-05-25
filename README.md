@@ -23,41 +23,42 @@ using an AI agent with MCP tools.
 ## Quick start
 
 ```bash
-# 1. Clone and set up
+# 1. Clone
 git clone https://github.com/your-org/TokenLeak.git
 cd TokenLeak
-python3.11 -m venv venv && source venv/bin/activate
-pip install .
 
-# 2. Configure (copy and edit)
+# 2. Install dependencies only (no package build needed)
+pip install -r requirements.txt
+
+# 3. Configure
 cp .env.example .env
 # Set TOKENLEAK_AI_API_KEY, TOKENLEAK_AI_MODEL, etc.
 
-# 3. Check status
-python -m tokenleak status
+# 4. Check status
+python tokenleak.py status
 
-# 4. Scan a repository
-python -m tokenleak scan https://github.com/user/repo.git
+# 5. Scan a repository
+python tokenleak.py scan https://github.com/user/repo.git
 
-# 5. Scan all repos from a list
+# 6. Scan all repos from a list
 echo "https://github.com/user/repo1.git" > repos.txt
 echo "github:my-org-name" >> repos.txt
-python -m tokenleak scan
+python tokenleak.py scan
 ```
 
 ## Installation
 
-**Without global install (recommended for cron):**
+**Recommended — no package build, just dependencies:**
 ```bash
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
-pip install .
-python -m tokenleak --version
+pip install -r requirements.txt
+python tokenleak.py --version
 ```
 
 **With PostgreSQL support:**
 ```bash
-pip install ".[postgres]"
+pip install -r requirements.txt psycopg2-binary
 ```
 
 ## Usage

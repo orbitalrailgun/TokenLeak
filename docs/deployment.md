@@ -38,11 +38,12 @@ sudo chmod 750 /opt/tokenleak/app
 ```bash
 sudo -u tokenleak python3.11 -m venv /opt/tokenleak/venv
 
-# Install dependencies
+# Install dependencies only (no package build)
 sudo -u tokenleak /opt/tokenleak/venv/bin/pip install \
-     -r /opt/tokenleak/app/pyproject.toml
-# Or: pip install /opt/tokenleak/app
-# For PostgreSQL support add: pip install /opt/tokenleak/app[postgres]
+     -r /opt/tokenleak/app/requirements.txt
+
+# For PostgreSQL support additionally:
+# sudo -u tokenleak /opt/tokenleak/venv/bin/pip install psycopg2-binary
 ```
 
 ## 4. Create and configure the .env file
@@ -92,7 +93,7 @@ sudo chmod 700 /opt/tokenleak/clones   # only tokenleak user can access clones
 
 ```bash
 cd /opt/tokenleak/app
-sudo -u tokenleak /opt/tokenleak/venv/bin/python -m tokenleak status
+sudo -u tokenleak /opt/tokenleak/venv/bin/python tokenleak.py status
 ```
 
 Expected output: a summary table with zero repos (DB is empty on first run).
@@ -103,7 +104,7 @@ Expected output: a summary table with zero repos (DB is empty on first run).
 # Scan a single public repo to confirm everything works
 sudo -u tokenleak \
   TOKENLEAK_REPOS_LIST_PATH=/dev/null \
-  /opt/tokenleak/venv/bin/python -m tokenleak \
+  /opt/tokenleak/venv/bin/python /opt/tokenleak/app/tokenleak.py \
   scan https://github.com/example/public-repo.git --noanimation
 ```
 
@@ -115,7 +116,7 @@ See [cron_setup.md](cron_setup.md) for the recommended cron configuration.
 
 ```bash
 sudo -u tokenleak git -C /opt/tokenleak/app pull
-sudo -u tokenleak /opt/tokenleak/venv/bin/pip install /opt/tokenleak/app
+sudo -u tokenleak /opt/tokenleak/venv/bin/pip install -r /opt/tokenleak/app/requirements.txt
 # No manual DB migration needed — the app applies schema on startup
 ```
 

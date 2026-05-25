@@ -33,7 +33,7 @@ TOKENLEAK_ENV=/opt/tokenleak/.env
 # m h dom mon dow command
 0 2 * * * cd /opt/tokenleak/app && \
   set -a && source /opt/tokenleak/.env && set +a && \
-  /opt/tokenleak/venv/bin/python -m tokenleak scan \
+  /opt/tokenleak/venv/bin/python tokenleak.py scan \
     --noanimation \
     >> /opt/tokenleak/logs/cron.log 2>&1
 ```
@@ -78,7 +78,7 @@ User=tokenleak
 Group=tokenleak
 WorkingDirectory=/opt/tokenleak/app
 EnvironmentFile=/opt/tokenleak/.env
-ExecStart=/opt/tokenleak/venv/bin/python -m tokenleak scan --noanimation
+ExecStart=/opt/tokenleak/venv/bin/python /opt/tokenleak/app/tokenleak.py scan --noanimation
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=tokenleak
@@ -158,9 +158,9 @@ To manually test the lock:
 
 ```bash
 # Terminal 1 — start a slow scan (will hold lock)
-sudo -u tokenleak /opt/tokenleak/venv/bin/python -m tokenleak scan
+sudo -u tokenleak /opt/tokenleak/venv/bin/python /opt/tokenleak/app/tokenleak.py scan
 
 # Terminal 2 — try to start another instance
-sudo -u tokenleak /opt/tokenleak/venv/bin/python -m tokenleak scan
+sudo -u tokenleak /opt/tokenleak/venv/bin/python /opt/tokenleak/app/tokenleak.py scan
 # Expected: ERROR: Another tokenleak instance is already running (PID XXXXX). Lock file: /opt/tokenleak/tokenleak.pid
 ```
