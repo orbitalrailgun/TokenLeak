@@ -111,6 +111,35 @@ def _call_tool(name: str, arguments: dict) -> str:
         return f"Tool error: {exc}"
 
 
+def _tool_status(name: str, args: dict) -> str:
+    """Format a short human-readable status string for an MCP tool call."""
+    if name == "read_file":
+        return f"⚙  read_file → {args.get('path', '')}"
+    if name == "read_file_at_commit":
+        sha = args.get("commit_sha", "")[:8]
+        return f"⚙  read_file_at_commit → {args.get('path', '')} @{sha}"
+    if name == "save_alert":
+        sev = args.get("severity", "?")
+        fp = args.get("file_path", "")
+        return f"⚙  save_alert [{sev}] → {fp}"
+    if name == "save_note":
+        snippet = str(args.get("content", ""))[:40].replace("\n", " ")
+        return f"⚙  save_note → {snippet}…"
+    if name == "get_notes":
+        return "⚙  get_notes"
+    if name == "search_content":
+        return f'⚙  search_content → "{args.get("pattern", "")}"'
+    if name == "list_files":
+        return f"⚙  list_files → {args.get('pattern', '*')}"
+    if name == "get_file_tree":
+        return "⚙  get_file_tree"
+    if name == "get_commit_log":
+        return "⚙  get_commit_log"
+    if name == "send_mattermost":
+        return "⚙  send_mattermost"
+    return f"⚙  {name}"
+
+
 def _agent_loop(
     client,
     model: str,
@@ -119,6 +148,7 @@ def _agent_loop(
     tools: list[dict],
     max_iterations: int,
     on_tokens: Optional[Callable[[int], None]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
 ) -> tuple[int, str]:
     """Run one agent conversation. Returns (total_tokens, final_text)."""
     messages = [
@@ -129,6 +159,8 @@ def _agent_loop(
     final_text = ""
 
     for iteration in range(max_iterations):
+        if on_status:
+            on_status(f"🧠 thinking… (iteration {iteration + 1})")
         response = chat(client, model, messages, tools=tools)
         tokens = extract_usage(response)
         total_tokens += tokens
@@ -140,12 +172,16 @@ def _agent_loop(
 
         if not msg.tool_calls:
             final_text = msg.content or ""
+            if on_status:
+                on_status("✓ analysis complete")
             log.debug("Agent done after %d iterations, %d tokens", iteration + 1, total_tokens)
             break
 
         for tc in msg.tool_calls:
             args = json.loads(tc.function.arguments)
             log.debug("Tool call: %s(%s)", tc.function.name, list(args.keys()))
+            if on_status:
+                on_status(_tool_status(tc.function.name, args))
             result = _call_tool(tc.function.name, args)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
     else:
@@ -209,6 +245,7 @@ def run_diff_scan(
     config: Config,
     notifications=None,
     on_tokens: Optional[Callable[[int], None]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
 ) -> int:
     """Scan only the diff (added lines) of one commit.
 
@@ -224,23 +261,33 @@ def run_diff_scan(
     client = build_client(config)
     system = _load_agent_md(config) or _DEFAULT_SYSTEM
 
+    if on_status:
+        on_status(f"📂 extracting diff {commit_sha[:8]}…")
     additions = get_commit_diff_additions(repo_path, commit_sha)
     if not additions:
         log.info("[scan %d] Empty diff for %s, skipping", scan_id, commit_sha[:8])
+        if on_status:
+            on_status("⏭  empty diff — skipped")
         return 0
 
+    if on_status:
+        on_status(f"🔎 prefiltering {len(additions)} file(s)…")
     candidates = _prefilter_diff(additions, config.prefilter_enabled)
     if not candidates:
         log.info(
             "[scan %d] Pre-filter: no candidates in %s (%d file(s) checked)",
             scan_id, commit_sha[:8], len(additions),
         )
+        if on_status:
+            on_status(f"✓ prefilter: no candidates in {len(additions)} file(s)")
         return 0
 
     log.info(
         "[scan %d] Diff candidates: %d/%d file(s) pass pre-filter",
         scan_id, len(candidates), len(additions),
     )
+    if on_status:
+        on_status(f"🧪 {len(candidates)}/{len(additions)} files passed prefilter → sending to AI")
 
     diff_text = _format_diff_for_agent(commit_sha, commit_author, commit_message, candidates)
     tokens, _ = _agent_loop(
@@ -251,6 +298,7 @@ def run_diff_scan(
         tools=mcp_server.TOOL_SCHEMAS,
         max_iterations=config.ai_max_iterations,
         on_tokens=on_tokens,
+        on_status=on_status,
     )
 
     db.update_scan_tokens(scan_id, tokens)
@@ -265,6 +313,7 @@ def run_full_scan(
     config: Config,
     notifications=None,
     on_tokens: Optional[Callable[[int], None]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
 ) -> int:
     """Two-pass full-file scan of the repository at its current state.
 
@@ -277,10 +326,14 @@ def run_full_scan(
     client = build_client(config)
     system = _load_agent_md(config) or _DEFAULT_SYSTEM
 
+    if on_status:
+        on_status("📁 loading file tree & commit log…")
     file_tree = _walker_file_tree(repo_path)
     commit_log = _walker_commit_log(repo_path, limit=200)
 
     log.info("[scan %d] Full scan — Pass 1 (map)", scan_id)
+    if on_status:
+        on_status("🗺  Pass 1 — building risk map…")
     tokens1, _ = _agent_loop(
         client=client,
         model=config.ai_model,
@@ -293,9 +346,12 @@ def run_full_scan(
         tools=mcp_server.TOOL_SCHEMAS,
         max_iterations=config.ai_max_iterations,
         on_tokens=on_tokens,
+        on_status=on_status,
     )
 
     log.info("[scan %d] Full scan — Pass 2 (deep scan)", scan_id)
+    if on_status:
+        on_status("🔬 Pass 2 — deep file scan…")
     tokens2, _ = _agent_loop(
         client=client,
         model=config.ai_model,
@@ -304,6 +360,7 @@ def run_full_scan(
         tools=mcp_server.TOOL_SCHEMAS,
         max_iterations=config.ai_max_iterations,
         on_tokens=on_tokens,
+        on_status=on_status,
     )
 
     total = tokens1 + tokens2

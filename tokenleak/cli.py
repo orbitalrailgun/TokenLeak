@@ -132,6 +132,7 @@ def scan_repo(
             db.start_scan(scan_id)
 
             counter = TokenCounter(repo=url, model=config.ai_model)
+            counter.set_commit(commit.sha)
             counter.start()
 
             try:
@@ -143,6 +144,7 @@ def scan_repo(
                         config=config,
                         notifications=mm if mm.enabled else None,
                         on_tokens=counter.add,
+                        on_status=counter.set_action,
                     )
                 else:
                     run_diff_scan(
@@ -155,6 +157,7 @@ def scan_repo(
                         config=config,
                         notifications=mm if mm.enabled else None,
                         on_tokens=counter.add,
+                        on_status=counter.set_action,
                     )
                 db.finish_scan(scan_id, ScanStatus.DONE)
             except Exception as exc:

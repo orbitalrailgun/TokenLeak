@@ -136,6 +136,7 @@ class ScanRow:
     tokens_used: int = 0
     commit_message: Optional[str] = None
     commit_author: Optional[str] = None
+    commit_date: Optional[datetime] = None
     scan_started_at: Optional[datetime] = None
     scan_finished_at: Optional[datetime] = None
     error_message: Optional[str] = None
