@@ -1,15 +1,16 @@
-"""Agent orchestration: two-pass scan of a single repository commit.
+"""Agent orchestration: two scan modes for a single repository commit.
 
-Pass 1 — MAP
-  The agent receives the file tree and commit log and produces a risk map
-  (saved as a note).  It identifies high-risk files and directories.
+DIFF MODE  (default for `scan`)
+  Fast and token-efficient. The agent receives only the *added* lines of the
+  commit diff, pre-filtered by entropy/regex locally. A single agent pass
+  analyses the candidates and calls save_alert() directly — no read_file
+  loop needed. The agent can still call read_file() for surrounding context.
 
-Pass 2 — DEEP SCAN
-  The agent reads individual files (via read_file / read_file_at_commit),
-  analyses content for secrets/PII/corporate data, and calls save_alert()
-  for every finding.
+FULL MODE  (default for `rescan`, or with --full-scan)
+  Thorough two-pass scan. Pass 1 builds a risk map of the full repo structure.
+  Pass 2 reads every high-risk file in full and analyses it.
 
-The agent loop continues until:
+In both modes the agent loop runs until:
   - The AI returns a message with no tool calls (done), OR
   - max_iterations is reached (safety limit).
 """
@@ -22,12 +23,39 @@ from typing import Callable, Optional
 
 from tokenleak.agent.client import build_client, chat, extract_usage
 from tokenleak.config import Config
-from tokenleak.db.base import Database
+from tokenleak.db.base import Database, ScanRow
 from tokenleak.logging_setup import get_logger
 from tokenleak.mcp_server import server as mcp_server
-from tokenleak.scanner.walker import get_commit_log_text, get_file_tree
+from tokenleak.scanner.prefilter import filter_file, should_send_to_ai
+from tokenleak.scanner.walker import (
+    DiffAdditions,
+    get_commit_diff_additions,
+    get_commit_log_text as _walker_commit_log,
+    get_file_tree as _walker_file_tree,
+)
 
 log = get_logger()
+
+# ── Prompts ───────────────────────────────────────────────────────────────────
+
+_DIFF_SCAN_PROMPT = """You are performing a security audit of a single git commit diff.
+
+You are given ONLY the lines that were ADDED in this commit (pre-filtered for
+likely secrets by local entropy and regex analysis). Your task:
+
+1. For EACH line or block of lines that contains a confirmed secret, token,
+   password, PII, or corporate-sensitive value — call save_alert().
+2. If you need surrounding context, use read_file() to read the full file.
+3. Ignore placeholder values like "CHANGE_ME", "your-key-here", "example.com".
+4. When finished, call send_mattermost() with a brief summary (if configured),
+   then reply with a plain-text summary and stop (no more tool calls).
+
+For each save_alert() call provide:
+  - file_path, line_start, line_end
+  - alert_type: secret | token | pii | corporate_secret | password | key
+  - severity: critical | high | medium | low
+  - description, code_snippet, how_used, confirmation
+"""
 
 _PASS1_PROMPT = """You are starting a security audit of a git repository.
 
@@ -35,52 +63,49 @@ Your goal in THIS pass:
 1. Study the file tree and commit log provided.
 2. Identify files, directories, and commits that are HIGH RISK for containing
    secrets, tokens, passwords, PII, or corporate-sensitive information.
-3. Call save_note() with a structured risk map: list high-risk files first,
-   then medium-risk, briefly note why each is risky.
-4. Do NOT call save_alert() in this pass — focus on mapping only.
+3. Call save_note() with a structured risk map: high-risk files first,
+   then medium-risk, with a brief reason for each.
+4. Do NOT call save_alert() in this pass.
 
-After saving your note, reply with a plain text summary of the map and stop.
+After saving your note, reply with a plain-text summary and stop.
 """
 
 _PASS2_PROMPT = """You are now performing the DEEP SCAN pass on this repository.
 
-Your risk map from Pass 1 is available via get_notes().
-Start by reading your notes, then systematically inspect each high-risk file.
+Start by reading your Pass 1 notes via get_notes(), then systematically inspect
+each high-risk file with read_file().
 
 For EVERY confirmed finding call save_alert() with:
   - The exact file path and line numbers
-  - Alert type: secret | token | pii | corporate_secret | password | key
-  - Severity: critical | high | medium | low
-  - A clear description of what was found
-  - The relevant code snippet (do not include actual credential values verbatim if very long)
-  - How the secret appears to be used
-  - Your confirmation that it is a real secret (not a placeholder like "CHANGE_ME")
+  - alert_type: secret | token | pii | corporate_secret | password | key
+  - severity: critical | high | medium | low
+  - A clear description, the relevant code snippet, how the secret is used,
+    and your confirmation that it is real (not a placeholder).
 
 Also check:
-  - All commit messages for accidentally committed secrets
-  - Deleted files that appear in git history (use read_file_at_commit)
-  - Configuration files, .env files, CI/CD configs, deployment scripts
+  - Commit messages for accidentally committed secrets
+  - Deleted files in git history (use read_file_at_commit)
+  - CI/CD configs, deployment scripts, .env files
 
-When you have exhaustively inspected all high-risk areas, call send_mattermost()
-with a concise summary of findings (if Mattermost is configured), then reply
-with a final summary and stop (no more tool calls).
+When done, call send_mattermost() with a brief summary (if configured),
+then reply with a plain-text summary and stop.
 """
 
+_DEFAULT_SYSTEM = (
+    "You are a security expert auditing a git repository for leaked secrets, "
+    "tokens, passwords, PII, and corporate-sensitive information. "
+    "Be thorough. Trust the code context to confirm findings."
+)
 
-def _load_agent_md(config: Config) -> str:
-    path = Path(config.agent_md_path)
-    if path.exists():
-        return path.read_text(errors="replace")
-    return ""
 
+# ── Shared agent loop ─────────────────────────────────────────────────────────
 
 def _call_tool(name: str, arguments: dict) -> str:
     fn = mcp_server.TOOLS.get(name)
     if fn is None:
         return f"Unknown tool: {name}"
     try:
-        result = fn(**arguments)
-        return str(result)
+        return str(fn(**arguments))
     except Exception as exc:
         log.warning("Tool %s failed: %s", name, exc)
         return f"Tool error: {exc}"
@@ -95,7 +120,7 @@ def _agent_loop(
     max_iterations: int,
     on_tokens: Optional[Callable[[int], None]] = None,
 ) -> tuple[int, str]:
-    """Run one agent conversation loop. Returns (total_tokens, final_text)."""
+    """Run one agent conversation. Returns (total_tokens, final_text)."""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
@@ -111,7 +136,6 @@ def _agent_loop(
             on_tokens(total_tokens)
 
         msg = response.choices[0].message
-        # Add assistant message to history
         messages.append(msg.model_dump(exclude_none=True))
 
         if not msg.tool_calls:
@@ -119,23 +143,122 @@ def _agent_loop(
             log.debug("Agent done after %d iterations, %d tokens", iteration + 1, total_tokens)
             break
 
-        # Execute all tool calls
         for tc in msg.tool_calls:
             args = json.loads(tc.function.arguments)
             log.debug("Tool call: %s(%s)", tc.function.name, list(args.keys()))
             result = _call_tool(tc.function.name, args)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": result,
-            })
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
     else:
         log.warning("Agent reached max_iterations=%d", max_iterations)
 
     return total_tokens, final_text
 
 
-def run_scan(
+def _load_agent_md(config: Config) -> str:
+    path = Path(config.agent_md_path)
+    if path.exists():
+        return path.read_text(errors="replace")
+    return ""
+
+
+# ── Diff mode helpers ─────────────────────────────────────────────────────────
+
+def _format_diff_for_agent(
+    sha: str,
+    author: str,
+    message: str,
+    candidates: DiffAdditions,
+) -> str:
+    """Format pre-filtered diff additions as a readable block for the agent."""
+    parts = [
+        f"## Commit `{sha[:12]}` by {author}",
+        f"## Message: {message!r}",
+        "",
+    ]
+    for file_path, lines in candidates.items():
+        parts.append(f"### File: `{file_path}`")
+        for lineno, content in lines:
+            parts.append(f"  Line {lineno}: {content}")
+        parts.append("")
+    return "\n".join(parts)
+
+
+def _prefilter_diff(additions: DiffAdditions, prefilter_enabled: bool) -> DiffAdditions:
+    """Return only the files/lines that pass the pre-filter."""
+    if not prefilter_enabled:
+        return additions
+
+    candidates: DiffAdditions = {}
+    for file_path, lines in additions.items():
+        synthetic_content = "\n".join(line for _, line in lines)
+        result = filter_file(Path(file_path), synthetic_content)
+        if should_send_to_ai(result, enabled=True):
+            candidates[file_path] = lines
+    return candidates
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def run_diff_scan(
+    repo_path: Path,
+    scan_id: int,
+    commit_sha: str,
+    commit_author: str,
+    commit_message: str,
+    db: Database,
+    config: Config,
+    notifications=None,
+    on_tokens: Optional[Callable[[int], None]] = None,
+) -> int:
+    """Scan only the diff (added lines) of one commit.
+
+    Flow:
+      1. Extract added lines via git show --unified=0
+      2. Pre-filter with entropy + regex (unless disabled)
+      3. Single agent pass: AI gets diff content directly, no read_file loop
+      4. Agent calls save_alert() for each confirmed finding
+
+    Returns total tokens used.
+    """
+    mcp_server.init_context(db, scan_id, repo_path, notifications)
+    client = build_client(config)
+    system = _load_agent_md(config) or _DEFAULT_SYSTEM
+
+    additions = get_commit_diff_additions(repo_path, commit_sha)
+    if not additions:
+        log.info("[scan %d] Empty diff for %s, skipping", scan_id, commit_sha[:8])
+        return 0
+
+    candidates = _prefilter_diff(additions, config.prefilter_enabled)
+    if not candidates:
+        log.info(
+            "[scan %d] Pre-filter: no candidates in %s (%d file(s) checked)",
+            scan_id, commit_sha[:8], len(additions),
+        )
+        return 0
+
+    log.info(
+        "[scan %d] Diff candidates: %d/%d file(s) pass pre-filter",
+        scan_id, len(candidates), len(additions),
+    )
+
+    diff_text = _format_diff_for_agent(commit_sha, commit_author, commit_message, candidates)
+    tokens, _ = _agent_loop(
+        client=client,
+        model=config.ai_model,
+        system_prompt=system + "\n\n" + _DIFF_SCAN_PROMPT,
+        user_message=diff_text,
+        tools=mcp_server.TOOL_SCHEMAS,
+        max_iterations=config.ai_max_iterations,
+        on_tokens=on_tokens,
+    )
+
+    db.update_scan_tokens(scan_id, tokens)
+    log.info("[scan %d] Diff scan done. Tokens: %d", scan_id, tokens)
+    return tokens
+
+
+def run_full_scan(
     repo_path: Path,
     scan_id: int,
     db: Database,
@@ -143,43 +266,40 @@ def run_scan(
     notifications=None,
     on_tokens: Optional[Callable[[int], None]] = None,
 ) -> int:
-    """Run the full two-pass agent scan. Returns total tokens used."""
+    """Two-pass full-file scan of the repository at its current state.
+
+    Pass 1: Agent builds a risk map from the file tree and commit log.
+    Pass 2: Agent reads high-risk files in full and saves alerts.
+
+    Returns total tokens used.
+    """
     mcp_server.init_context(db, scan_id, repo_path, notifications)
-
     client = build_client(config)
-    agent_instructions = _load_agent_md(config)
-    base_system = agent_instructions or (
-        "You are a security expert auditing a git repository for leaked secrets, "
-        "tokens, passwords, PII, and corporate-sensitive information. "
-        "Be thorough. Trust the code context to confirm findings."
-    )
+    system = _load_agent_md(config) or _DEFAULT_SYSTEM
 
-    file_tree = get_file_tree(repo_path)
-    commit_log = get_commit_log_text(repo_path, limit=200)
+    file_tree = _walker_file_tree(repo_path)
+    commit_log = _walker_commit_log(repo_path, limit=200)
 
-    # ── Pass 1: Map ────────────────────────────────────────────────────────────
-    log.info("[scan %d] Starting Pass 1 (map)", scan_id)
-    pass1_user = (
-        f"REPOSITORY FILE TREE:\n```\n{file_tree}\n```\n\n"
-        f"RECENT COMMIT LOG:\n```\n{commit_log}\n```\n\n"
-        "Build your risk map now."
-    )
+    log.info("[scan %d] Full scan — Pass 1 (map)", scan_id)
     tokens1, _ = _agent_loop(
         client=client,
         model=config.ai_model,
-        system_prompt=base_system + "\n\n" + _PASS1_PROMPT,
-        user_message=pass1_user,
+        system_prompt=system + "\n\n" + _PASS1_PROMPT,
+        user_message=(
+            f"REPOSITORY FILE TREE:\n```\n{file_tree}\n```\n\n"
+            f"RECENT COMMIT LOG:\n```\n{commit_log}\n```\n\n"
+            "Build your risk map now."
+        ),
         tools=mcp_server.TOOL_SCHEMAS,
         max_iterations=config.ai_max_iterations,
         on_tokens=on_tokens,
     )
 
-    # ── Pass 2: Deep scan ──────────────────────────────────────────────────────
-    log.info("[scan %d] Starting Pass 2 (deep scan)", scan_id)
-    tokens2, final_text = _agent_loop(
+    log.info("[scan %d] Full scan — Pass 2 (deep scan)", scan_id)
+    tokens2, _ = _agent_loop(
         client=client,
         model=config.ai_model,
-        system_prompt=base_system + "\n\n" + _PASS2_PROMPT,
+        system_prompt=system + "\n\n" + _PASS2_PROMPT,
         user_message="Begin the deep scan. Start by reading your notes from Pass 1.",
         tools=mcp_server.TOOL_SCHEMAS,
         max_iterations=config.ai_max_iterations,
@@ -188,5 +308,5 @@ def run_scan(
 
     total = tokens1 + tokens2
     db.update_scan_tokens(scan_id, total)
-    log.info("[scan %d] Agent finished. Total tokens: %d", scan_id, total)
+    log.info("[scan %d] Full scan done. Tokens: %d", scan_id, total)
     return total

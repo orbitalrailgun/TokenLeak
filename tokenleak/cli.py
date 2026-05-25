@@ -80,8 +80,9 @@ def scan_repo(
     mm: Mattermost,
     rescan: bool,
     sha_filter: Optional[str],
+    full_scan: bool = False,
 ) -> None:
-    from tokenleak.agent.runner import run_scan
+    from tokenleak.agent.runner import run_diff_scan, run_full_scan
 
     provider = _guess_provider(url)
     repo_id = db.upsert_repo(url, provider, name=url.rstrip("/").split("/")[-1].removesuffix(".git"))
@@ -98,20 +99,25 @@ def scan_repo(
         # Size check
         size_mb = clone_mod.repo_size_mb(repo_path)
         if size_mb > config.max_repo_size_mb:
-            msg = (
-                f"Skipping {url} — size {size_mb:.0f} MB > limit {config.max_repo_size_mb} MB"
-            )
+            msg = f"Skipping {url} — size {size_mb:.0f} MB > limit {config.max_repo_size_mb} MB"
             log.warning(msg)
             console.print(f"[yellow]⚠ {msg}[/yellow]")
             mm.send_skipped_large_repo(url, size_mb, config.max_repo_size_mb)
             return
 
-        commits = list_commits(repo_path)
+        # Diff mode skips merge commits automatically — they add no new content.
+        # Full mode includes merges (reads full files, not diffs).
+        skip_merges = not full_scan
+        commits = list_commits(repo_path, skip_merges=skip_merges)
+
         if sha_filter:
             commits = [c for c in commits if c.sha.startswith(sha_filter)]
             if not commits:
                 console.print(f"[yellow]No matching commit for --sha {sha_filter} in {url}[/yellow]")
                 return
+
+        mode_label = "full" if full_scan else "diff"
+        console.print(f"[dim]Mode: {mode_label} | Commits: {len(commits)}[/dim]")
 
         for commit in commits:
             existing = db.get_scan(repo_id, commit.sha)
@@ -129,14 +135,27 @@ def scan_repo(
             counter.start()
 
             try:
-                run_scan(
-                    repo_path=repo_path,
-                    scan_id=scan_id,
-                    db=db,
-                    config=config,
-                    notifications=mm if mm.enabled else None,
-                    on_tokens=counter.add,
-                )
+                if full_scan:
+                    run_full_scan(
+                        repo_path=repo_path,
+                        scan_id=scan_id,
+                        db=db,
+                        config=config,
+                        notifications=mm if mm.enabled else None,
+                        on_tokens=counter.add,
+                    )
+                else:
+                    run_diff_scan(
+                        repo_path=repo_path,
+                        scan_id=scan_id,
+                        commit_sha=commit.sha,
+                        commit_author=commit.author,
+                        commit_message=commit.message,
+                        db=db,
+                        config=config,
+                        notifications=mm if mm.enabled else None,
+                        on_tokens=counter.add,
+                    )
                 db.finish_scan(scan_id, ScanStatus.DONE)
             except Exception as exc:
                 log.error("Scan error for %s@%s: %s", url, commit.sha[:8], exc)
@@ -177,6 +196,7 @@ def cmd_scan(
     targets: list[str],
     sha: Optional[str],
     rescan: bool,
+    full_scan: bool,
     config: Config,
 ) -> None:
     db = create_db(config)
@@ -191,7 +211,7 @@ def cmd_scan(
     console.print(f"[bold]TokenLeak v{__version__}[/bold] — scanning {len(urls)} repo(s)")
     for url in urls:
         console.rule(f"[cyan]{url}[/cyan]")
-        scan_repo(url, config, db, mm, rescan=rescan, sha_filter=sha)
+        scan_repo(url, config, db, mm, rescan=rescan, sha_filter=sha, full_scan=full_scan)
 
     db.close()
     console.print("[bold green]Done.[/bold green]")
