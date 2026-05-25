@@ -32,7 +32,12 @@ _SAFE_ENV = {
 
 
 def _remove_exec_bits(path: Path) -> None:
+    # Only strip execute bits from regular files.
+    # Directories need the execute (traverse/search) bit to remain accessible —
+    # without it no one can stat or open files inside them, even with read permission.
     for item in path.rglob("*"):
+        if item.is_dir():
+            continue
         try:
             mode = item.stat().st_mode
             item.chmod(mode & ~(stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))

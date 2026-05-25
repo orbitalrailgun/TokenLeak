@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from tokenleak.scanner.prefilter import filter_file, should_send_to_ai, _shannon
+from tokenleak.scanner.prefilter import (
+    filter_file, should_send_to_ai, is_excluded, _shannon, _is_placeholder_line,
+)
 
 
 class TestShannonEntropy:
@@ -57,8 +59,8 @@ class TestFilterFile:
 
     def test_high_entropy_string_flagged(self, tmp_path):
         f = tmp_path / "config.yml"
-        # A random-looking base64 string with high entropy
-        f.write_text("secret: Th1sIsAVeryR4nd0mStr1ngW1thH1ghEntr0pyXXXXYYYY\n")
+        # A random-looking base64 string with high entropy (no placeholder patterns)
+        f.write_text("secret: kB7mQv2nXpR9sLw4jH6tYeZd1aUoFcGiN8WqTMPKbhrV\n")
         result = filter_file(f, f.read_text())
         assert result.is_candidate
 
@@ -80,6 +82,67 @@ class TestFilterFile:
         result = filter_file(f, f.read_text())
         assert result.is_candidate
         assert any(m.pattern_name == "db_connection_string" for m in result.matches)
+
+
+class TestExclusion:
+    def test_env_example_excluded(self, tmp_path):
+        f = tmp_path / ".env.example"
+        f.write_text("API_KEY=your-api-key-here\nPASSWORD=REPLACE_WITH_STRONG_PASSWORD\n")
+        assert is_excluded(f)
+        result = filter_file(f, f.read_text())
+        assert result.is_excluded_file
+        assert not result.is_candidate
+
+    def test_env_sample_excluded(self, tmp_path):
+        f = tmp_path / ".env.sample"
+        assert is_excluded(f)
+
+    def test_env_template_excluded(self, tmp_path):
+        f = tmp_path / ".env.template"
+        assert is_excluded(f)
+
+    def test_real_env_not_excluded(self, tmp_path):
+        f = tmp_path / ".env"
+        assert not is_excluded(f)
+
+    def test_env_local_not_excluded(self, tmp_path):
+        f = tmp_path / ".env.local"
+        assert not is_excluded(f)
+
+    def test_excluded_not_sent_even_when_prefilter_disabled(self, tmp_path):
+        f = tmp_path / ".env.example"
+        f.write_text("SECRET=AKIAIOSFODNN7EXAMPLE")
+        result = filter_file(f, f.read_text())
+        assert not should_send_to_ai(result, enabled=False)
+
+
+class TestPlaceholderSuppression:
+    def test_placeholder_sk_ellipsis(self):
+        assert _is_placeholder_line("API_KEY=sk-...")
+
+    def test_placeholder_replace_with(self):
+        assert _is_placeholder_line("DB_PASSWORD=REPLACE_WITH_STRONG_PASSWORD")
+
+    def test_placeholder_ghp_ellipsis(self):
+        assert _is_placeholder_line("GITHUB_TOKEN=ghp_...")
+
+    def test_placeholder_your_key(self):
+        assert _is_placeholder_line("KEY=your-api-key-here")
+
+    def test_placeholder_template_var(self):
+        assert _is_placeholder_line("SECRET=${MY_SECRET}")
+
+    def test_placeholder_angle_brackets(self):
+        assert _is_placeholder_line("TOKEN=<REPLACE_THIS>")
+
+    def test_real_password_not_placeholder(self):
+        assert not _is_placeholder_line('password = "hunter2real!ABC"')
+
+    def test_real_db_url_not_placeholder(self):
+        assert not _is_placeholder_line("DB_URL=postgresql://admin:realpass123@db.host/mydb")
+
+    def test_real_aws_key_not_placeholder(self):
+        assert not _is_placeholder_line("AWS_KEY=AKIAIOSFODNN7REALKEY12")
 
 
 class TestShouldSendToAI:

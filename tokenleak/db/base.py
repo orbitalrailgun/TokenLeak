@@ -152,6 +152,7 @@ class AlertRow:
     severity: Optional[str]
     agent_json: dict = field(default_factory=dict)
     is_false_positive: bool = False
+    created_at: Optional[datetime] = None
 
 
 class Database(ABC):

@@ -40,10 +40,23 @@ corporate-sensitive information — across the full history of the repository.
 - Proprietary algorithms described in detail
 
 ## What NOT to alert on
-- Clearly fake placeholder values: `CHANGE_ME`, `your-api-key-here`, `example.com`
-- Values in test fixtures that are clearly not real (random strings in unit tests)
-- Public documentation examples
-- Already-revoked tokens (mention them as low severity informational)
+
+**Template and example files — never alert on these, no exceptions:**
+- `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, `.env.default`
+- Any file ending in `.example`, `.sample`, `.template`
+- Files whose name or path contains the words `example`, `sample`, or `template`
+
+**Placeholder values — skip any line whose value matches:**
+- `CHANGE_ME`, `your-api-key-here`, `your-token`, `enter-your-key`, `replace-with`
+- Values with ellipsis shorthand: `sk-...`, `ghp_XXXX`, `glpat-XXXX`
+- Values in angle brackets: `<YOUR_KEY>`, `<TOKEN>`
+- Variable substitution syntax: `${VARIABLE}`, `%(variable)s`
+- Obviously fake/test tokens (repeating chars, all-caps short strings)
+
+**Other false positives to ignore:**
+- Values in unit test fixtures that are clearly not real credentials
+- Public documentation examples in README or docs
+- Already-revoked tokens (note them as low severity informational only)
 
 ## Analysis approach
 

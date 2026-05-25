@@ -1,11 +1,13 @@
 """Pre-filter: fast local detection of high-probability secrets before AI analysis.
 
-Two detection mechanisms run in parallel on every file:
-  1. Regex patterns — known secret formats (AWS, JWT, private keys, etc.)
-  2. Shannon entropy — lines with entropy > threshold on long-enough tokens
+Three detection mechanisms run on every file:
+  1. Exclusion — template/example files are dropped before any analysis
+  2. Regex patterns — known secret formats (AWS, JWT, private keys, etc.)
+     with placeholder suppression (CHANGE_ME, sk-..., etc. are discarded)
+  3. Shannon entropy — lines with entropy > threshold on long-enough tokens
 
 When prefilter is DISABLED (config or --no-prefilter), this module returns
-every file as a candidate so the AI sees everything.
+every non-excluded file as a candidate so the AI sees everything.
 """
 
 from __future__ import annotations
@@ -14,18 +16,17 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 # ── Entropy ───────────────────────────────────────────────────────────────────
 
-ENTROPY_THRESHOLD = 4.5   # bits per character
-ENTROPY_MIN_LEN = 20      # ignore short tokens
+ENTROPY_THRESHOLD = 4.5
+ENTROPY_MIN_LEN = 20
 
 
 def _shannon(s: str) -> float:
     if not s:
         return 0.0
-    freq = {}
+    freq: dict[str, int] = {}
     for c in s:
         freq[c] = freq.get(c, 0) + 1
     n = len(s)
@@ -37,12 +38,78 @@ def _high_entropy_tokens(line: str) -> list[str]:
     return [t for t in tokens if len(t) >= ENTROPY_MIN_LEN and _shannon(t) >= ENTROPY_THRESHOLD]
 
 
+# ── Exclusion: template / example files ───────────────────────────────────────
+# These files are documentation for configuration — never real secrets.
+
+_EXCLUDED_NAMES = re.compile(
+    r"""(?ix)
+    (^|/)
+    (
+        \.env\.(example|sample|template|dist|test|demo|default|placeholder) |
+        .*\.(example|sample|template|dist)$  |
+        example[_-].*\.(env|cfg|conf|ini|yaml|yml|json|toml) |
+        .*[_-](example|sample|template)\.(env|cfg|conf|ini|yaml|yml|json|toml)
+    )
+    $
+""",
+)
+
+
+def is_excluded(path: Path) -> bool:
+    """Return True for template/example files that should never be scanned."""
+    return bool(_EXCLUDED_NAMES.search(str(path)))
+
+
+# ── Placeholder suppression ───────────────────────────────────────────────────
+# Values that look like secrets but are obviously fake templates.
+
+_PLACEHOLDER_RE = re.compile(
+    r"""(?ix)
+    # Word-boundary anchored keywords
+    \b(
+        change[_-]?me                                               |
+        your[_-]?(api[_-]?)?(key|token|secret|password)([_-]?here)? |
+        enter[_-]?your                                              |
+        insert[_-]?(key|token|secret|password)                      |
+        example[_-]?(key|token|secret|password)                     |
+        dummy[_-]?(key|token|secret|password)                       |
+        fake[_-]?(key|token|secret|password)                        |
+        test[_-]?(key|token|secret|password)                        |
+        placeholder                                                 |
+        n/?a                                                        |
+        xxx+                                                        |
+        todo                                                        |
+        fixme
+    )\b
+    |
+    # Prefix match — REPLACE_WITH* covers REPLACE_WITH_STRONG_PASSWORD etc.
+    replace[_-]?with
+    |
+    # Ellipsis patterns: sk-..., ghp_XXXX, glpat-...
+    (?:sk|pk|ghp|glpat|xox)[-_][.…]{2,}   |
+    [A-Z0-9]{3,}X{4,}                      |   # AKIAXXXXXXXXXXXXXXXX
+    <[A-Z_\s]{3,}>                          |   # <YOUR_KEY_HERE>
+    \$\{[^}]{3,}\}                          |   # ${VARIABLE_NAME}
+    %\([^)]{3,}\)s                              # %(variable_name)s
+""",
+)
+
+
+def _is_placeholder_line(line: str) -> bool:
+    """Return True if the line's value is clearly a template placeholder."""
+    # Only check the value part (right of = or :)
+    m = re.search(r"[=:]\s*(.+)$", line)
+    value = m.group(1).strip().strip("'\"`") if m else line
+    return bool(_PLACEHOLDER_RE.search(value))
+
+
 # ── Regex patterns ─────────────────────────────────────────────────────────────
 
 @dataclass
 class Pattern:
     name: str
     regex: re.Pattern
+
 
 _PATTERNS: list[Pattern] = [
     # Keys & tokens
@@ -71,18 +138,20 @@ _PATTERNS: list[Pattern] = [
     # Connection strings
     Pattern("db_connection_string", re.compile(r"(?:postgresql|mysql|mongodb|redis|amqp)://[^\s'\"]{5,}:[^\s'\"]{3,}@")),
     Pattern("smtp_credentials",     re.compile(r"smtp://[^\s]{3,}:[^\s]{3,}@")),
-    # PII patterns
+    # PII
     Pattern("credit_card",          re.compile(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11})\b")),
-    # .env files
+    # .env files (real values, not blank)
     Pattern("dotenv_secret",        re.compile(r"""^[A-Z_]{3,50}(?:KEY|SECRET|TOKEN|PASS|PWD|PASSWORD|AUTH)\s*=\s*\S{8,}""", re.MULTILINE)),
 ]
 
-# Suspicious file names (checked against path, not content)
+# Suspicious file names — real config files, NOT examples/templates
+# Note: .env.example is handled by _EXCLUDED_NAMES above, not here.
 _SUSPICIOUS_NAMES = re.compile(
     r"""(?ix)
     (^|/)
     (
-        \.env(\.\w+)?         |   # .env, .env.local, .env.prod
+        \.env$                |   # exactly .env
+        \.env\.(local|prod|dev|staging|production|development|ci|test\.local) |
         .*password.*          |
         .*secret.*            |
         .*credential.*        |
@@ -119,11 +188,14 @@ class Match:
 class FileResult:
     path: Path
     is_suspicious_name: bool
+    is_excluded_file: bool = False
     matches: list[Match] = field(default_factory=list)
     high_entropy_lines: list[tuple[int, str]] = field(default_factory=list)
 
     @property
     def is_candidate(self) -> bool:
+        if self.is_excluded_file:
+            return False
         return self.is_suspicious_name or bool(self.matches) or bool(self.high_entropy_lines)
 
 
@@ -131,6 +203,10 @@ class FileResult:
 
 def filter_file(path: Path, content: str) -> FileResult:
     """Check a single file. Always returns a FileResult; caller checks is_candidate."""
+    # Template/example files are always excluded — no AI analysis needed.
+    if is_excluded(path):
+        return FileResult(path=path, is_suspicious_name=False, is_excluded_file=True)
+
     rel = str(path)
     suspicious_name = bool(
         _SUSPICIOUS_NAMES.search(rel)
@@ -139,6 +215,10 @@ def filter_file(path: Path, content: str) -> FileResult:
     result = FileResult(path=path, is_suspicious_name=suspicious_name)
 
     for lineno, line in enumerate(content.splitlines(), start=1):
+        # Skip lines that are clearly placeholder/template values
+        if _is_placeholder_line(line):
+            continue
+
         for pat in _PATTERNS:
             m = pat.regex.search(line)
             if m:
@@ -158,6 +238,8 @@ def filter_file(path: Path, content: str) -> FileResult:
 
 def should_send_to_ai(result: FileResult, enabled: bool) -> bool:
     """Return True if this file should be sent to the AI for deeper analysis."""
+    if result.is_excluded_file:
+        return False
     if not enabled:
         return True   # prefilter disabled — send everything
     return result.is_candidate
