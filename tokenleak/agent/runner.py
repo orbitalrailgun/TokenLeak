@@ -60,14 +60,17 @@ For each save_alert() call provide:
 _PASS1_PROMPT = """You are starting a security audit of a git repository.
 
 Your goal in THIS pass:
-1. Study the file tree and commit log provided.
+1. Study ONLY the file tree and commit log provided in this message.
 2. Identify files, directories, and commits that are HIGH RISK for containing
    secrets, tokens, passwords, PII, or corporate-sensitive information.
-3. Call save_note() with a structured risk map: high-risk files first,
+3. Call save_note() ONCE with a structured risk map: high-risk files first,
    then medium-risk, with a brief reason for each.
 4. Do NOT call save_alert() in this pass.
+5. Do NOT call read_file(), search_content(), list_files(), or any other tool
+   except save_note() — the file tree and commit log are sufficient for the map.
+   File reading happens in Pass 2.
 
-After saving your note, reply with a plain-text summary and stop.
+After saving your single note, reply with a brief summary and stop immediately.
 """
 
 _PASS2_PROMPT = """You are now performing the DEEP SCAN pass on this repository.
@@ -86,6 +89,12 @@ Also check:
   - Commit messages for accidentally committed secrets
   - Deleted files in git history (use read_file_at_commit)
   - CI/CD configs, deployment scripts, .env files
+
+Efficiency rules — IMPORTANT:
+  - Call search_content() for at most 5 patterns total; batch your searches.
+  - Call read_file() only for files flagged in your Pass 1 risk map.
+  - Do not repeat the same search_content() pattern more than once.
+  - Once you have checked all high-risk files, stop — do not keep searching.
 
 When done, call send_mattermost() with a brief summary (if configured),
 then reply with a plain-text summary and stop.
@@ -107,7 +116,7 @@ def _call_tool(name: str, arguments: dict) -> str:
     try:
         return str(fn(**arguments))
     except Exception as exc:
-        log.warning("Tool %s failed: %s", name, exc)
+        log.warning("Tool %s failed (scan_id=%s): %s", name, mcp_server._scan_id, exc)
         return f"Tool error: {exc}"
 
 
@@ -165,7 +174,7 @@ def _agent_loop(
         tokens = extract_usage(response)
         total_tokens += tokens
         if on_tokens:
-            on_tokens(total_tokens)
+            on_tokens(tokens)  # incremental, not cumulative — counter.add() accumulates itself
 
         msg = response.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))

@@ -88,6 +88,7 @@ def main() -> None:
         syslog_enabled=config.syslog_enabled,
         syslog_host=config.syslog_host,
         syslog_port=config.syslog_port,
+        log_file=config.log_file or None,
     )
 
     from tokenleak.cli import cmd_scan, cmd_status, cmd_mcp

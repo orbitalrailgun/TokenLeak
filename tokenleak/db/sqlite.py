@@ -70,7 +70,7 @@ class SQLiteDB(Database):
     def create_scan(self, repo_id: int, commit_sha: str, commit_message: str,
                     commit_author: str, commit_date: Optional[datetime]) -> int:
         cx = self._cx()
-        cur = cx.execute(
+        cx.execute(
             """INSERT OR IGNORE INTO scans
                (repo_id, commit_sha, commit_message, commit_author, commit_date, status)
                VALUES (?, ?, ?, ?, ?, ?)""",
@@ -79,8 +79,8 @@ class SQLiteDB(Database):
              ScanStatus.PENDING),
         )
         cx.commit()
-        if cur.lastrowid:
-            return cur.lastrowid
+        # Always SELECT — INSERT OR IGNORE may silently skip on UNIQUE conflict,
+        # and cursor.lastrowid is unreliable (returns stale connection rowid) in that case.
         row = cx.execute(
             "SELECT id FROM scans WHERE repo_id = ? AND commit_sha = ?",
             (repo_id, commit_sha),

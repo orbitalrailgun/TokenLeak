@@ -75,6 +75,9 @@ class Config:
     # Lock
     lock_file: str = field(default_factory=lambda: os.getenv("TOKENLEAK_LOCK_FILE", "/tmp/tokenleak.pid"))
 
+    # Log file (empty string = disabled)
+    log_file: str = field(default_factory=lambda: os.getenv("TOKENLEAK_LOG_FILE", "tokenleak.log"))
+
     # Runtime (overridden by CLI flags)
     animation_enabled: bool = True
     report_output: Optional[str] = None  # None = no report; "-" = stdout; path = file

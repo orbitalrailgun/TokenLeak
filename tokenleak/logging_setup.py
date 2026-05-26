@@ -1,4 +1,4 @@
-"""Logging configuration: stderr + optional syslog (local socket or remote UDP)."""
+"""Logging configuration: stderr + optional file + optional syslog."""
 
 import logging
 import logging.handlers
@@ -12,6 +12,7 @@ def setup_logging(
     syslog_enabled: bool = True,
     syslog_host: Optional[str] = None,
     syslog_port: int = 514,
+    log_file: Optional[str] = None,
 ) -> logging.Logger:
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(logging.DEBUG)
@@ -28,6 +29,20 @@ def setup_logging(
     stderr_handler.setLevel(logging.INFO)
     stderr_handler.setFormatter(fmt)
     logger.addHandler(stderr_handler)
+
+    if log_file:
+        try:
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_file,
+                maxBytes=10 * 1024 * 1024,  # 10 MB
+                backupCount=3,
+                encoding="utf-8",
+            )
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(fmt)
+            logger.addHandler(file_handler)
+        except Exception as exc:
+            logger.warning("Cannot open log file %s: %s", log_file, exc)
 
     if syslog_enabled:
         try:
