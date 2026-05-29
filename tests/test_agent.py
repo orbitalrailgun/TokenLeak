@@ -23,6 +23,7 @@ class TestMCPToolRegistry:
             "save_alert", "save_note", "get_notes", "read_file",
             "read_file_at_commit", "list_files", "search_content",
             "get_commit_log", "get_file_tree", "send_mattermost",
+            "analyze_image_file",
         }
         assert expected == set(mcp_server.TOOLS.keys())
 

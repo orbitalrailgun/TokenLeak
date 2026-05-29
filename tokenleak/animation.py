@@ -9,7 +9,6 @@ from rich.live import Live
 from rich.text import Text
 
 _SPIN = ["|", "/", "-", "\\"]
-_DRIP_WIDTH = 13          # number of spinner chars in the drip row
 _ENABLED = True
 _console = Console(stderr=True)
 
@@ -57,7 +56,6 @@ class TokenCounter:
 
     def _render(self) -> Text:
         s = _SPIN[self._frame % 4]
-        drip = ("  " + s) * _DRIP_WIDTH
 
         t = Text()
         t.append("🔍 ", style="bold cyan")
@@ -78,7 +76,6 @@ class TokenCounter:
         t.append(f"\n  {s}  ", style="bold red")
         t.append("<<<< LEAKING >>>>", style="blink bold red")
         t.append(f"  {s}\n", style="bold red")
-        t.append(f"{drip}\n", style="red")
 
         if self._action:
             t.append(f"\n  {self._action}", style="dim cyan")

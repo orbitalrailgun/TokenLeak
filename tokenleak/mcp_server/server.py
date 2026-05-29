@@ -33,14 +33,36 @@ _db = None
 _scan_id: Optional[int] = None
 _repo_path: Optional[Path] = None
 _notifications = None   # notifications.mattermost module reference
+_ocr_client = None
+_ocr_model: str = ""
+_repo_id: Optional[int] = None
+_commit_sha: str = ""
+_commit_date = None  # datetime | None
 
 
-def init_context(db, scan_id: int, repo_path: Path, notifications=None) -> None:
+def init_context(
+    db,
+    scan_id: int,
+    repo_path: Path,
+    notifications=None,
+    ocr_client=None,
+    ocr_model: str = "",
+    repo_id: Optional[int] = None,
+    commit_sha: str = "",
+    commit_date=None,
+) -> None:
     global _db, _scan_id, _repo_path, _notifications
+    global _ocr_client, _ocr_model
+    global _repo_id, _commit_sha, _commit_date
     _db = db
     _scan_id = scan_id
     _repo_path = repo_path
     _notifications = notifications
+    _ocr_client = ocr_client
+    _ocr_model = ocr_model
+    _repo_id = repo_id
+    _commit_sha = commit_sha
+    _commit_date = commit_date
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
@@ -79,6 +101,9 @@ def save_alert(
     alert_id = _db.save_alert(
         _scan_id, file_path, line_start, line_end or line_start,
         alert_type, severity, agent_json,
+        repo_id=_repo_id,
+        commit_sha=_commit_sha or None,
+        commit_date=_commit_date,
     )
     log.info("[ALERT #%d] %s severity=%s file=%s", alert_id, alert_type, severity, file_path)
     return f"Alert #{alert_id} saved."
@@ -105,11 +130,12 @@ def get_notes() -> str:
 
 
 @mcp.tool()
-def read_file(path: str) -> str:
+def read_file(path: str, limit: int = 0) -> str:
     """Read a file from the cloned repository (current HEAD).
 
     Args:
         path: Path relative to the repository root.
+        limit: Maximum characters to return (0 = no limit).
     """
     full = _repo_path / path
     if not full.exists():
@@ -117,7 +143,10 @@ def read_file(path: str) -> str:
     if full.stat().st_size > 10 * 1024 * 1024:
         return f"File too large to read: {path}"
     try:
-        return full.read_text(errors="replace")
+        content = full.read_text(errors="replace")
+        if limit and len(content) > limit:
+            return content[:limit] + f"\n[... truncated at {limit} chars]"
+        return content
     except OSError as exc:
         return f"Cannot read {path}: {exc}"
 
@@ -216,6 +245,65 @@ def send_mattermost(message: str, channel: str = "") -> str:
         return f"Mattermost error: {exc}"
 
 
+@mcp.tool()
+def analyze_image_file(path: str) -> str:
+    """Analyze an image file or Jupyter notebook for sensitive information using OCR.
+
+    Pass an image file path (.png, .jpg, .jpeg, .gif, .webp) or a Jupyter notebook
+    path (.ipynb) — the tool automatically extracts and analyzes all embedded
+    image outputs from notebooks.
+
+    Returns a description of any sensitive content found, or a "nothing found" message.
+    Returns an error message if OCR is not configured (TOKENLEAK_OCR_MODEL not set).
+
+    Args:
+        path: Path relative to the repository root.
+    """
+    if not _ocr_model or not _ocr_client:
+        return "OCR not configured — set TOKENLEAK_OCR_MODEL to enable image analysis."
+
+    from tokenleak.scanner.ocr import (
+        analyze_image,
+        extract_notebook_images,
+        mime_for_extension,
+        SUPPORTED_EXTENSIONS,
+    )
+
+    full = _repo_path / path
+    if not full.exists():
+        return f"File not found: {path}"
+
+    if path.endswith(".ipynb"):
+        try:
+            nb_text = full.read_text(errors="replace")
+        except OSError as exc:
+            return f"Cannot read {path}: {exc}"
+        images = extract_notebook_images(nb_text)
+        if not images:
+            return "No embedded images found in this notebook."
+        findings = []
+        for cell_idx, mime, img_bytes in images:
+            finding, _ = analyze_image(
+                _ocr_client, _ocr_model, img_bytes, mime,
+                context=f"{path} cell[{cell_idx}]",
+            )
+            if finding:
+                findings.append(f"Cell {cell_idx}: {finding}")
+        return "\n\n".join(findings) if findings else "No sensitive information found in notebook images."
+
+    mime = mime_for_extension(full.suffix)
+    if not mime:
+        return f"Unsupported file type for OCR: {full.suffix}. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+
+    try:
+        img_bytes = full.read_bytes()
+    except OSError as exc:
+        return f"Cannot read {path}: {exc}"
+
+    finding, _ = analyze_image(_ocr_client, _ocr_model, img_bytes, mime, context=path)
+    return finding or "No sensitive information found."
+
+
 # ── OpenAI-compatible tool schema list ────────────────────────────────────────
 # Defined explicitly so we don't depend on FastMCP internals for schema export.
 
@@ -269,7 +357,10 @@ TOOL_SCHEMAS: list[dict] = [
             "description": "Read a file from the cloned repository (current HEAD)",
             "parameters": {
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {
+                    "path":  {"type": "string"},
+                    "limit": {"type": "integer", "description": "Max chars to return (0 = no limit)"},
+                },
                 "required": ["path"],
             },
         },
@@ -352,6 +443,24 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_image_file",
+            "description": (
+                "Analyze an image file (.png, .jpg, .jpeg, .gif, .webp) or "
+                "Jupyter notebook (.ipynb) for sensitive information using OCR. "
+                "For notebooks, all embedded image outputs are analyzed automatically. "
+                "Returns findings or 'No sensitive information found.' "
+                "Returns an error if TOKENLEAK_OCR_MODEL is not configured."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Path relative to repository root"}},
+                "required": ["path"],
+            },
+        },
+    },
 ]
 
 # Direct Python call registry — used by agent runner without MCP transport
@@ -366,4 +475,5 @@ TOOLS: dict[str, Any] = {
     "get_commit_log":       get_commit_log,
     "get_file_tree":        get_file_tree,
     "send_mattermost":      send_mattermost,
+    "analyze_image_file":   analyze_image_file,
 }

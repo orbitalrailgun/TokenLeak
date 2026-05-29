@@ -40,6 +40,7 @@ class Config:
     ai_model: str = field(default_factory=lambda: os.getenv("TOKENLEAK_AI_MODEL", "gpt-4o"))
     ai_context_window: int = field(default_factory=lambda: _int("TOKENLEAK_AI_CONTEXT_WINDOW", 262144))
     ai_max_iterations: int = field(default_factory=lambda: _int("TOKENLEAK_AI_MAX_ITERATIONS", 50))
+    ocr_model: str = field(default_factory=lambda: os.getenv("TOKENLEAK_OCR_MODEL", ""))
 
     # Scanner
     prefilter_enabled: bool = field(default_factory=lambda: _bool("TOKENLEAK_PREFILTER_ENABLED", True))

@@ -145,6 +145,9 @@ def scan_repo(
                         notifications=mm if mm.enabled else None,
                         on_tokens=counter.add,
                         on_status=counter.set_action,
+                        repo_id=repo_id,
+                        commit_sha=commit.sha,
+                        commit_date=commit.date,
                     )
                 else:
                     run_diff_scan(
@@ -158,6 +161,8 @@ def scan_repo(
                         notifications=mm if mm.enabled else None,
                         on_tokens=counter.add,
                         on_status=counter.set_action,
+                        repo_id=repo_id,
+                        commit_date=commit.date,
                     )
                 db.finish_scan(scan_id, ScanStatus.DONE)
             except Exception as exc:

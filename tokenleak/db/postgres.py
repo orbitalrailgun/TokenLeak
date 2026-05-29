@@ -44,6 +44,15 @@ class PostgresDB(Database):
                 stmt = statement.strip()
                 if stmt:
                     cur.execute(stmt)
+            # Migrate: add columns introduced after initial schema
+            for col_name, col_def in [
+                ("repo_id",     "INTEGER REFERENCES repos(id)"),
+                ("commit_sha",  "TEXT"),
+                ("commit_date", "TIMESTAMPTZ"),
+            ]:
+                cur.execute(
+                    f"ALTER TABLE alerts ADD COLUMN IF NOT EXISTS {col_name} {col_def}"
+                )
         self._conn.commit()
 
     def close(self) -> None:
@@ -158,16 +167,30 @@ class PostgresDB(Database):
 
     # ── Alerts ─────────────────────────────────────────────────────────────────
 
-    def save_alert(self, scan_id: int, file_path: str, line_start: int, line_end: int,
-                   alert_type: str, severity: str, agent_json: dict) -> int:
-        import psycopg2.extras
+    def save_alert(
+        self,
+        scan_id: int,
+        file_path: str,
+        line_start: int,
+        line_end: int,
+        alert_type: str,
+        severity: str,
+        agent_json: dict,
+        repo_id: Optional[int] = None,
+        commit_sha: Optional[str] = None,
+        commit_date=None,
+    ) -> int:
         row = self._fetchone(
             """INSERT INTO alerts
-               (scan_id, file_path, line_start, line_end, alert_type, severity, agent_json)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               (scan_id, repo_id, commit_sha, commit_date,
+                file_path, line_start, line_end, alert_type, severity, agent_json)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id""",
-            (scan_id, file_path, line_start, line_end, alert_type, severity,
-             json.dumps(agent_json, ensure_ascii=False)),
+            (
+                scan_id, repo_id, commit_sha, commit_date,
+                file_path, line_start, line_end, alert_type, severity,
+                json.dumps(agent_json, ensure_ascii=False),
+            ),
         )
         self._conn.commit()
         return row["id"]

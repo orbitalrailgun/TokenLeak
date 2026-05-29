@@ -31,7 +31,20 @@ class SQLiteDB(Database):
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA_SQLITE)
+        self._migrate_alerts()
         self._conn.commit()
+
+    def _migrate_alerts(self) -> None:
+        """Add new columns to alerts table for databases created before this migration."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(alerts)")}
+        migrations = [
+            ("repo_id",     "INTEGER REFERENCES repos(id)"),
+            ("commit_sha",  "TEXT"),
+            ("commit_date", "DATETIME"),
+        ]
+        for col_name, col_def in migrations:
+            if col_name not in existing:
+                self._conn.execute(f"ALTER TABLE alerts ADD COLUMN {col_name} {col_def}")
 
     def close(self) -> None:
         if self._conn:
@@ -133,15 +146,31 @@ class SQLiteDB(Database):
 
     # ── Alerts ─────────────────────────────────────────────────────────────────
 
-    def save_alert(self, scan_id: int, file_path: str, line_start: int, line_end: int,
-                   alert_type: str, severity: str, agent_json: dict) -> int:
+    def save_alert(
+        self,
+        scan_id: int,
+        file_path: str,
+        line_start: int,
+        line_end: int,
+        alert_type: str,
+        severity: str,
+        agent_json: dict,
+        repo_id: Optional[int] = None,
+        commit_sha: Optional[str] = None,
+        commit_date=None,
+    ) -> int:
         cx = self._cx()
         cur = cx.execute(
             """INSERT INTO alerts
-               (scan_id, file_path, line_start, line_end, alert_type, severity, agent_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (scan_id, file_path, line_start, line_end, alert_type, severity,
-             json.dumps(agent_json, ensure_ascii=False)),
+               (scan_id, repo_id, commit_sha, commit_date,
+                file_path, line_start, line_end, alert_type, severity, agent_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                scan_id, repo_id, commit_sha,
+                commit_date.isoformat() if commit_date else None,
+                file_path, line_start, line_end, alert_type, severity,
+                json.dumps(agent_json, ensure_ascii=False),
+            ),
         )
         cx.commit()
         return cur.lastrowid

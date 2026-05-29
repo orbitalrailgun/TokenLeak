@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS scans (
 CREATE TABLE IF NOT EXISTS alerts (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id           INTEGER NOT NULL REFERENCES scans(id),
+    repo_id           INTEGER REFERENCES repos(id),
+    commit_sha        TEXT,
+    commit_date       DATETIME,
     file_path         TEXT,
     line_start        INTEGER DEFAULT 0,
     line_end          INTEGER DEFAULT 0,
@@ -87,6 +90,9 @@ CREATE TABLE IF NOT EXISTS scans (
 CREATE TABLE IF NOT EXISTS alerts (
     id                SERIAL PRIMARY KEY,
     scan_id           INTEGER NOT NULL REFERENCES scans(id),
+    repo_id           INTEGER REFERENCES repos(id),
+    commit_sha        TEXT,
+    commit_date       TIMESTAMPTZ,
     file_path         TEXT,
     line_start        INTEGER DEFAULT 0,
     line_end          INTEGER DEFAULT 0,
@@ -154,6 +160,9 @@ class AlertRow:
     agent_json: dict = field(default_factory=dict)
     is_false_positive: bool = False
     created_at: Optional[datetime] = None
+    repo_id: Optional[int] = None
+    commit_sha: Optional[str] = None
+    commit_date: Optional[datetime] = None
 
 
 class Database(ABC):
@@ -198,8 +207,19 @@ class Database(ABC):
     # ── Alerts ─────────────────────────────────────────────────────────────────
 
     @abstractmethod
-    def save_alert(self, scan_id: int, file_path: str, line_start: int, line_end: int,
-                   alert_type: str, severity: str, agent_json: dict) -> int: ...
+    def save_alert(
+        self,
+        scan_id: int,
+        file_path: str,
+        line_start: int,
+        line_end: int,
+        alert_type: str,
+        severity: str,
+        agent_json: dict,
+        repo_id: Optional[int] = None,
+        commit_sha: Optional[str] = None,
+        commit_date: Optional[datetime] = None,
+    ) -> int: ...
 
     @abstractmethod
     def list_alerts(self, scan_id: int) -> list[AlertRow]: ...

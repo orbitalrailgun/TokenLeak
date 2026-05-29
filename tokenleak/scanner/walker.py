@@ -121,6 +121,91 @@ def get_file_tree(repo_path: Path) -> str:
     return result.stdout.strip()
 
 
+_IMAGE_EXTENSIONS: frozenset[str] = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+})
+
+
+def get_commit_image_files(repo_path: Path, sha: str) -> dict[str, bytes]:
+    """Return {relative_path: raw_bytes} for image files added/modified in a commit."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "diff-tree", "--no-commit-id", "-r",
+         "--name-status", "--diff-filter=AM", sha],
+        capture_output=True, text=True, timeout=60,
+    )
+    images: dict[str, bytes] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2 or parts[0].strip() not in ("A", "M"):
+            continue
+        path = parts[1].strip()
+        if Path(path).suffix.lower() not in _IMAGE_EXTENSIONS:
+            continue
+        content = subprocess.run(
+            ["git", "-C", str(repo_path), "show", f"{sha}:{path}"],
+            capture_output=True, timeout=30,
+        )
+        if content.returncode == 0 and content.stdout:
+            images[path] = content.stdout
+    return images
+
+
+def get_commit_notebooks(repo_path: Path, sha: str) -> dict[str, str]:
+    """Return {relative_path: notebook_json} for .ipynb files added/modified in a commit."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "diff-tree", "--no-commit-id", "-r",
+         "--name-status", "--diff-filter=AM", sha],
+        capture_output=True, text=True, timeout=60,
+    )
+    notebooks: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2 or parts[0].strip() not in ("A", "M"):
+            continue
+        path = parts[1].strip()
+        if not path.endswith(".ipynb"):
+            continue
+        content = subprocess.run(
+            ["git", "-C", str(repo_path), "show", f"{sha}:{path}"],
+            capture_output=True, timeout=60,
+        )
+        if content.returncode == 0:
+            notebooks[path] = content.stdout.decode("utf-8", errors="replace")
+    return notebooks
+
+
+def get_repo_image_files(repo_path: Path) -> dict[str, Path]:
+    """Return {relative_path: absolute_path} for all image files in the current HEAD."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "ls-tree", "-r", "--name-only", "HEAD"],
+        capture_output=True, text=True, timeout=30,
+    )
+    images: dict[str, Path] = {}
+    for line in result.stdout.splitlines():
+        path = line.strip()
+        if Path(path).suffix.lower() in _IMAGE_EXTENSIONS:
+            full = repo_path / path
+            if full.exists():
+                images[path] = full
+    return images
+
+
+def get_repo_notebooks(repo_path: Path) -> dict[str, Path]:
+    """Return {relative_path: absolute_path} for all .ipynb files in the current HEAD."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "ls-tree", "-r", "--name-only", "HEAD"],
+        capture_output=True, text=True, timeout=30,
+    )
+    notebooks: dict[str, Path] = {}
+    for line in result.stdout.splitlines():
+        path = line.strip()
+        if path.endswith(".ipynb"):
+            full = repo_path / path
+            if full.exists():
+                notebooks[path] = full
+    return notebooks
+
+
 # Type alias: file path → list of (line_number, line_content)
 DiffAdditions = dict[str, list[tuple[int, str]]]
 
