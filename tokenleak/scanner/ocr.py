@@ -102,6 +102,9 @@ def analyze_image(
             return None, tokens
         return result, tokens
     except Exception as exc:
+        from tokenleak.agent.client import InsufficientFundsError, is_billing_error
+        if is_billing_error(exc):
+            raise InsufficientFundsError(str(exc)) from exc
         log.warning("OCR analysis failed (model=%s, context=%s): %s", model, context, exc)
         return None, 0
 

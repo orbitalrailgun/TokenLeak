@@ -83,6 +83,7 @@ def scan_repo(
     full_scan: bool = False,
 ) -> None:
     from tokenleak.agent.runner import run_diff_scan, run_full_scan
+    from tokenleak.agent.client import InsufficientFundsError
 
     provider = _guess_provider(url)
     repo_id = db.upsert_repo(url, provider, name=url.rstrip("/").split("/")[-1].removesuffix(".git"))
@@ -165,6 +166,10 @@ def scan_repo(
                         commit_date=commit.date,
                     )
                 db.finish_scan(scan_id, ScanStatus.DONE)
+            except InsufficientFundsError as exc:
+                log.critical("API funds exhausted at %s@%s: %s", url, commit.sha[:8], exc)
+                db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+                raise  # stop scanning this repo immediately
             except Exception as exc:
                 log.error("Scan error for %s@%s: %s", url, commit.sha[:8], exc)
                 db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
@@ -216,10 +221,21 @@ def cmd_scan(
         console.print("[yellow]No repositories to scan.[/yellow]")
         return
 
+    from tokenleak.agent.client import InsufficientFundsError
+
     console.print(f"[bold]TokenLeak v{__version__}[/bold] — scanning {len(urls)} repo(s)")
     for url in urls:
         console.rule(f"[cyan]{url}[/cyan]")
-        scan_repo(url, config, db, mm, rescan=rescan, sha_filter=sha, full_scan=full_scan)
+        try:
+            scan_repo(url, config, db, mm, rescan=rescan, sha_filter=sha, full_scan=full_scan)
+        except InsufficientFundsError as exc:
+            console.print(
+                f"\n[bold red]⛔ API funds exhausted — scanning stopped.[/bold red]\n"
+                f"[red]{exc}[/red]\n"
+                f"[yellow]Top up your API account balance and re-run to continue.[/yellow]"
+            )
+            log.critical("Scan aborted: API funds exhausted — %s", exc)
+            break
 
     db.close()
     console.print("[bold green]Done.[/bold green]")
