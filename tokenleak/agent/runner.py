@@ -1,12 +1,12 @@
 """Agent orchestration: two scan modes for a single repository commit.
 
-DIFF MODE  (default for `scan`)
+DIFF MODE  (used for individual commits in `scan`)
   Fast and token-efficient. The agent receives only the *added* lines of the
   commit diff, pre-filtered by entropy/regex locally. A single agent pass
   analyses the candidates and calls save_alert() directly — no read_file
   loop needed. The agent can still call read_file() for surrounding context.
 
-FULL MODE  (default for `rescan`, or with --full-scan)
+FULL MODE  (used for HEAD in `scan` first run and in `rescan`)
   Thorough two-pass scan. Pass 1 builds a risk map of the full repo structure.
   Pass 2 reads every high-risk file in full and analyses it.
 
@@ -230,6 +230,7 @@ def _ocr_images(
     repo_id: Optional[int] = None,
     commit_sha: Optional[str] = None,
     commit_date=None,
+    triggered_by: Optional[str] = None,
 ) -> int:
     """Run OCR on a map of {path: raw_bytes}. Saves alerts directly. Returns tokens used."""
     from tokenleak.scanner.ocr import analyze_image, mime_for_extension
@@ -254,6 +255,7 @@ def _ocr_images(
                 repo_id=repo_id,
                 commit_sha=commit_sha,
                 commit_date=commit_date,
+                triggered_by=triggered_by,
             )
             log.info("[scan %d] OCR alert in image file: %s", scan_id, img_path)
     return total
@@ -270,6 +272,7 @@ def _ocr_notebooks(
     repo_id: Optional[int] = None,
     commit_sha: Optional[str] = None,
     commit_date=None,
+    triggered_by: Optional[str] = None,
 ) -> int:
     """Run OCR on images embedded in notebooks. notebook_map is {path: json_text | Path}.
     Saves alerts directly. Returns tokens used.
@@ -312,6 +315,7 @@ def _ocr_notebooks(
                     repo_id=repo_id,
                     commit_sha=commit_sha,
                     commit_date=commit_date,
+                    triggered_by=triggered_by,
                 )
                 log.info("[scan %d] OCR alert in notebook: %s cell[%d]", scan_id, nb_path, cell_idx)
     return total
@@ -328,6 +332,7 @@ def _run_ocr_for_commit(
     on_status: Optional[Callable[[str], None]] = None,
     repo_id: Optional[int] = None,
     commit_date=None,
+    triggered_by: Optional[str] = None,
 ) -> int:
     """OCR scan of all images and notebook outputs added/modified in one commit.
     Returns total OCR tokens used.
@@ -349,10 +354,12 @@ def _run_ocr_for_commit(
     tokens = _ocr_images(
         image_files, client, model, scan_id, db, on_tokens, on_status,
         repo_id=repo_id, commit_sha=sha, commit_date=commit_date,
+        triggered_by=triggered_by,
     )
     tokens += _ocr_notebooks(
         notebooks, client, model, scan_id, db, on_tokens, on_status,
         repo_id=repo_id, commit_sha=sha, commit_date=commit_date,
+        triggered_by=triggered_by,
     )
 
     if on_status:
@@ -372,6 +379,7 @@ def _run_ocr_for_repo(
     repo_id: Optional[int] = None,
     commit_sha: Optional[str] = None,
     commit_date=None,
+    triggered_by: Optional[str] = None,
 ) -> int:
     """OCR scan of ALL image files and notebooks in the current HEAD of the repo.
     Used as a safety net after full scan Pass 2.
@@ -402,10 +410,12 @@ def _run_ocr_for_repo(
     tokens = _ocr_images(
         image_bytes_map, client, model, scan_id, db, on_tokens, on_status,
         repo_id=repo_id, commit_sha=commit_sha, commit_date=commit_date,
+        triggered_by=triggered_by,
     )
     tokens += _ocr_notebooks(
         notebooks_map, client, model, scan_id, db, on_tokens, on_status,
         repo_id=repo_id, commit_sha=commit_sha, commit_date=commit_date,
+        triggered_by=triggered_by,
     )
 
     if on_status:
@@ -485,6 +495,7 @@ def run_diff_scan(
     on_status: Optional[Callable[[str], None]] = None,
     repo_id: Optional[int] = None,
     commit_date=None,
+    triggered_by: Optional[str] = None,
 ) -> int:
     """Scan only the diff (added lines) of one commit.
 
@@ -504,6 +515,7 @@ def run_diff_scan(
         repo_id=repo_id,
         commit_sha=commit_sha,
         commit_date=commit_date,
+        triggered_by=triggered_by,
     )
     system = _load_agent_md(config) or _DEFAULT_SYSTEM
 
@@ -552,6 +564,7 @@ def run_diff_scan(
             repo_path, commit_sha, db, scan_id, config, client,
             on_tokens=on_tokens, on_status=on_status,
             repo_id=repo_id, commit_date=commit_date,
+            triggered_by=triggered_by,
         )
         tokens += ocr_tokens
 
@@ -571,6 +584,7 @@ def run_full_scan(
     repo_id: Optional[int] = None,
     commit_sha: Optional[str] = None,
     commit_date=None,
+    triggered_by: Optional[str] = None,
 ) -> int:
     """Two-pass full-file scan of the repository at its current state.
 
@@ -587,6 +601,7 @@ def run_full_scan(
         repo_id=repo_id,
         commit_sha=commit_sha or "",
         commit_date=commit_date,
+        triggered_by=triggered_by,
     )
     system = _load_agent_md(config) or _DEFAULT_SYSTEM
 
@@ -633,6 +648,7 @@ def run_full_scan(
             repo_path, db, scan_id, config, client,
             on_tokens=on_tokens, on_status=on_status,
             repo_id=repo_id, commit_sha=commit_sha, commit_date=commit_date,
+            triggered_by=triggered_by,
         )
 
     total = tokens1 + tokens2 + ocr_tokens

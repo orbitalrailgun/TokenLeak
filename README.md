@@ -8,8 +8,10 @@ using an AI agent with MCP tools.
 
 ## Features
 
-- **Full history scan** — analyses every commit, not just the current state
-- **AI agent** — two-pass: risk map first, then deep file-by-file analysis
+- **Smart scan strategy** — full scan HEAD on first run; incremental diff scan on subsequent runs
+- **AI agent** — two-pass full scan: risk map first, then deep file-by-file analysis
+- **Diff scan** — fast, token-efficient: analyses only changed lines per commit
+- **OCR image analysis** — optional vision model scans images and Jupyter notebook outputs
 - **Pre-filter** — Shannon entropy + 25+ regex patterns reduce AI token usage
 - **Multiple providers** — GitHub, GitLab (self-hosted), Gitea/Forgejo, plain git URLs
 - **OpenAI or Ollama** — configurable AI backend with custom URL support
@@ -17,6 +19,7 @@ using an AI agent with MCP tools.
 - **Mattermost alerts** — optional real-time notifications
 - **Process lock** — safe for cron; concurrent instances prevented automatically
 - **Large repo guard** — configurable size limit with logging and notifications
+- **Billing error guard** — stops immediately on API quota/funds exhaustion
 - **Secure clone** — hooks disabled, exec bits removed, temp dir cleaned up
 - **Cross-platform** — Linux, macOS, Windows (Python 3.11+)
 
@@ -67,9 +70,20 @@ pip install -r requirements.txt psycopg2-binary
 python -m tokenleak scan    [TARGET ...] [--sha SHA] [--report [FILE]]
                                          [--no-prefilter] [--noanimation]
 python -m tokenleak rescan  [TARGET ...] [--sha SHA] [--report [FILE]]
+                                         [--no-prefilter] [--noanimation]
 python -m tokenleak status
 python -m tokenleak mcp                  # start MCP server over stdio
 ```
+
+### Scan strategy
+
+| Command | Behaviour |
+|---------|-----------|
+| `scan` (first run for a repo) | Full scan of HEAD, then diff scan all history |
+| `scan` (subsequent runs) | Diff scan of new commits only |
+| `rescan` | Always like first run — full HEAD + all history |
+| `scan --sha X` | Diff scan that one commit |
+| `rescan --sha X` | Full scan at that commit |
 
 ### Target formats
 
@@ -85,10 +99,13 @@ python -m tokenleak mcp                  # start MCP server over stdio
 ### Examples
 
 ```bash
-# Scan specific commit
+# Diff-scan a specific commit
 python -m tokenleak scan https://github.com/user/repo.git --sha abc123
 
-# Rescan (ignore cached results) + write markdown report
+# Full-scan at a specific commit
+python -m tokenleak rescan https://github.com/user/repo.git --sha abc123
+
+# Rescan everything (ignore cached results) + write markdown report
 python -m tokenleak rescan github:my-org --report report.md
 
 # Disable pre-filter (AI sees everything)
@@ -110,6 +127,7 @@ All settings via environment variables or a `.env` file. Copy `.env.example` to 
 | `TOKENLEAK_AI_API_KEY` | — | API key (OpenAI) |
 | `TOKENLEAK_AI_API_URL` | — | Custom base URL |
 | `TOKENLEAK_AI_MODEL` | `gpt-4o` | Model name |
+| `TOKENLEAK_OCR_MODEL` | — | Vision model for image/notebook OCR (optional) |
 | `TOKENLEAK_DB_TYPE` | `sqlite` | `sqlite` or `postgres` |
 | `TOKENLEAK_PREFILTER_ENABLED` | `true` | Disable with `false` or `--no-prefilter` |
 | `TOKENLEAK_MAX_REPO_SIZE_MB` | `2048` | Skip repos larger than this |
@@ -126,6 +144,18 @@ TOKENLEAK_AI_PROVIDER=ollama
 TOKENLEAK_AI_API_URL=http://localhost:11434/v1
 TOKENLEAK_AI_MODEL=llama3.1:70b
 ```
+
+## OCR image analysis
+
+Set `TOKENLEAK_OCR_MODEL` to enable automatic scanning of images and Jupyter
+notebook outputs for sensitive information:
+
+```bash
+TOKENLEAK_OCR_MODEL=gpt-4o    # any vision-capable model
+```
+
+Supported: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` files, and images embedded in
+`.ipynb` cell outputs. When the variable is not set, images are skipped silently.
 
 ## Database
 

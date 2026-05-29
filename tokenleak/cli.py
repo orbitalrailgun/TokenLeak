@@ -80,11 +80,26 @@ def scan_repo(
     mm: Mattermost,
     rescan: bool,
     sha_filter: Optional[str],
-    full_scan: bool = False,
 ) -> None:
+    """Scan a single repository.
+
+    Behavioral model
+    ────────────────
+    scan (first run for this repo):
+        Full scan of HEAD, then diff scan every historical commit.
+    scan (subsequent runs):
+        Diff scan only commits newer than the last scanned commit.
+    rescan:
+        Always behaves like first run (full HEAD + all historical diffs).
+    scan --sha X:
+        Diff scan that specific commit only.
+    rescan --sha X:
+        Full scan at that specific commit (treats HEAD as that commit).
+    """
     from tokenleak.agent.runner import run_diff_scan, run_full_scan
     from tokenleak.agent.client import InsufficientFundsError
 
+    triggered_by = "rescan" if rescan else "scan"
     provider = _guess_provider(url)
     repo_id = db.upsert_repo(url, provider, name=url.rstrip("/").split("/")[-1].removesuffix(".git"))
     repo_path: Optional[Path] = None
@@ -97,7 +112,6 @@ def scan_repo(
         return
 
     try:
-        # Size check
         size_mb = clone_mod.repo_size_mb(repo_path)
         if size_mb > config.max_repo_size_mb:
             msg = f"Skipping {url} — size {size_mb:.0f} MB > limit {config.max_repo_size_mb} MB"
@@ -106,90 +120,175 @@ def scan_repo(
             mm.send_skipped_large_repo(url, size_mb, config.max_repo_size_mb)
             return
 
-        # Diff mode skips merge commits automatically — they add no new content.
-        # Full mode includes merges (reads full files, not diffs).
-        skip_merges = not full_scan
-        commits = list_commits(repo_path, skip_merges=skip_merges)
+        # All commits in the repo, newest first, no merge commits
+        all_commits = list_commits(repo_path, skip_merges=True)
 
+        # ── --sha filter: single-commit mode ──────────────────────────────────
         if sha_filter:
-            commits = [c for c in commits if c.sha.startswith(sha_filter)]
-            if not commits:
+            target = next((c for c in all_commits if c.sha.startswith(sha_filter)), None)
+            if not target:
                 console.print(f"[yellow]No matching commit for --sha {sha_filter} in {url}[/yellow]")
                 return
 
-        mode_label = "full" if full_scan else "diff"
-        console.print(f"[dim]Mode: {mode_label} | Commits: {len(commits)}[/dim]")
+            if rescan:
+                # rescan --sha: full scan (HEAD treated as this commit's state)
+                console.print(f"[dim]Mode: full (rescan --sha) | Commit: {target.sha[:8]}[/dim]")
+                scan_id = db.create_scan(
+                    repo_id, target.sha, target.message, target.author, target.date,
+                    scan_mode="full",
+                )
+                db.start_scan(scan_id)
+                counter = TokenCounter(repo=url, model=config.ai_model)
+                counter.set_commit(target.sha)
+                counter.start()
+                try:
+                    run_full_scan(
+                        repo_path=repo_path, scan_id=scan_id, db=db, config=config,
+                        notifications=mm if mm.enabled else None,
+                        on_tokens=counter.add, on_status=counter.set_action,
+                        repo_id=repo_id, commit_sha=target.sha, commit_date=target.date,
+                        triggered_by=triggered_by,
+                    )
+                    db.finish_scan(scan_id, ScanStatus.DONE)
+                except InsufficientFundsError as exc:
+                    db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+                    raise
+                except Exception as exc:
+                    log.error("Scan error for %s@%s: %s", url, target.sha[:8], exc)
+                    db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+                finally:
+                    counter.stop()
+            else:
+                # scan --sha: diff scan that one commit
+                console.print(f"[dim]Mode: diff (scan --sha) | Commit: {target.sha[:8]}[/dim]")
+                scan_id = db.create_scan(
+                    repo_id, target.sha, target.message, target.author, target.date,
+                    scan_mode="diff",
+                )
+                db.start_scan(scan_id)
+                counter = TokenCounter(repo=url, model=config.ai_model)
+                counter.set_commit(target.sha)
+                counter.start()
+                try:
+                    run_diff_scan(
+                        repo_path=repo_path, scan_id=scan_id,
+                        commit_sha=target.sha, commit_author=target.author,
+                        commit_message=target.message, db=db, config=config,
+                        notifications=mm if mm.enabled else None,
+                        on_tokens=counter.add, on_status=counter.set_action,
+                        repo_id=repo_id, commit_date=target.date,
+                        triggered_by=triggered_by,
+                    )
+                    db.finish_scan(scan_id, ScanStatus.DONE)
+                except InsufficientFundsError as exc:
+                    db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+                    raise
+                except Exception as exc:
+                    log.error("Scan error for %s@%s: %s", url, target.sha[:8], exc)
+                    db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+                finally:
+                    counter.stop()
+            _post_scan(db, scan_id, mm, url, config)
+            return
 
-        for commit in commits:
-            existing = db.get_scan(repo_id, commit.sha)
-            if existing and existing.status == ScanStatus.DONE and not rescan:
+        # ── Normal scan / rescan ───────────────────────────────────────────────
+        # Determine which commits have already been successfully scanned
+        done_shas: set[str] = set()
+        if not rescan:
+            for s in db.list_scans(repo_id=repo_id):
+                if s.status == ScanStatus.DONE:
+                    done_shas.add(s.commit_sha)
+
+        first_run = rescan or not done_shas
+
+        if first_run:
+            # Phase 1: full scan of HEAD
+            head_commit = all_commits[0] if all_commits else None
+            if head_commit:
+                console.print(f"[dim]Mode: full (HEAD) + diff (history) | Commits: {len(all_commits)}[/dim]")
+                scan_id = db.create_scan(
+                    repo_id, head_commit.sha, head_commit.message,
+                    head_commit.author, head_commit.date, scan_mode="full",
+                )
+                db.start_scan(scan_id)
+                counter = TokenCounter(repo=url, model=config.ai_model)
+                counter.set_commit(head_commit.sha)
+                counter.start()
+                try:
+                    run_full_scan(
+                        repo_path=repo_path, scan_id=scan_id, db=db, config=config,
+                        notifications=mm if mm.enabled else None,
+                        on_tokens=counter.add, on_status=counter.set_action,
+                        repo_id=repo_id, commit_sha=head_commit.sha,
+                        commit_date=head_commit.date, triggered_by=triggered_by,
+                    )
+                    db.finish_scan(scan_id, ScanStatus.DONE)
+                    done_shas.add(head_commit.sha)
+                except InsufficientFundsError as exc:
+                    db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+                    raise
+                except Exception as exc:
+                    log.error("Full scan error for %s: %s", url, exc)
+                    db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+                finally:
+                    counter.stop()
+                _post_scan(db, scan_id, mm, url, config)
+
+            # Phase 2: diff scan all historical commits (skip HEAD, already full-scanned)
+            history = all_commits[1:]
+        else:
+            # Subsequent run: diff scan only new commits (not in done_shas)
+            history = [c for c in all_commits if c.sha not in done_shas]
+            console.print(f"[dim]Mode: diff (incremental) | New commits: {len(history)}[/dim]")
+
+        for commit in history:
+            if commit.sha in done_shas:
                 log.info("Skipping already-scanned commit %s in %s", commit.sha[:8], url)
                 continue
 
             scan_id = db.create_scan(
-                repo_id, commit.sha,
-                commit.message, commit.author, commit.date,
+                repo_id, commit.sha, commit.message, commit.author, commit.date,
+                scan_mode="diff",
             )
             db.start_scan(scan_id)
-
             counter = TokenCounter(repo=url, model=config.ai_model)
             counter.set_commit(commit.sha)
             counter.start()
-
             try:
-                if full_scan:
-                    run_full_scan(
-                        repo_path=repo_path,
-                        scan_id=scan_id,
-                        db=db,
-                        config=config,
-                        notifications=mm if mm.enabled else None,
-                        on_tokens=counter.add,
-                        on_status=counter.set_action,
-                        repo_id=repo_id,
-                        commit_sha=commit.sha,
-                        commit_date=commit.date,
-                    )
-                else:
-                    run_diff_scan(
-                        repo_path=repo_path,
-                        scan_id=scan_id,
-                        commit_sha=commit.sha,
-                        commit_author=commit.author,
-                        commit_message=commit.message,
-                        db=db,
-                        config=config,
-                        notifications=mm if mm.enabled else None,
-                        on_tokens=counter.add,
-                        on_status=counter.set_action,
-                        repo_id=repo_id,
-                        commit_date=commit.date,
-                    )
+                run_diff_scan(
+                    repo_path=repo_path, scan_id=scan_id,
+                    commit_sha=commit.sha, commit_author=commit.author,
+                    commit_message=commit.message, db=db, config=config,
+                    notifications=mm if mm.enabled else None,
+                    on_tokens=counter.add, on_status=counter.set_action,
+                    repo_id=repo_id, commit_date=commit.date,
+                    triggered_by=triggered_by,
+                )
                 db.finish_scan(scan_id, ScanStatus.DONE)
             except InsufficientFundsError as exc:
                 log.critical("API funds exhausted at %s@%s: %s", url, commit.sha[:8], exc)
                 db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
-                raise  # stop scanning this repo immediately
+                raise
             except Exception as exc:
                 log.error("Scan error for %s@%s: %s", url, commit.sha[:8], exc)
                 db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
             finally:
                 counter.stop()
-
-            # Post-scan report
-            if config.report_output:
-                alerts = db.list_alerts(scan_id)
-                md = gen_report(db, scan_id, url)
-                write_report(md, config.report_output)
-
-            # Mattermost summary
-            if mm.enabled:
-                alerts = db.list_alerts(scan_id)
-                mm.send_scan_summary(url, alerts, scan_id)
+            _post_scan(db, scan_id, mm, url, config)
 
     finally:
         if repo_path:
             clone_mod.remove(repo_path)
+
+
+def _post_scan(db, scan_id: int, mm: Mattermost, url: str, config) -> None:
+    """Generate report and send Mattermost notification after a completed scan."""
+    if config.report_output:
+        md = gen_report(db, scan_id, url)
+        write_report(md, config.report_output)
+    if mm.enabled:
+        alerts = db.list_alerts(scan_id)
+        mm.send_scan_summary(url, alerts, scan_id)
 
 
 def _guess_provider(url: str) -> str:
@@ -209,7 +308,6 @@ def cmd_scan(
     targets: list[str],
     sha: Optional[str],
     rescan: bool,
-    full_scan: bool,
     config: Config,
 ) -> None:
     db = create_db(config)
@@ -227,7 +325,7 @@ def cmd_scan(
     for url in urls:
         console.rule(f"[cyan]{url}[/cyan]")
         try:
-            scan_repo(url, config, db, mm, rescan=rescan, sha_filter=sha, full_scan=full_scan)
+            scan_repo(url, config, db, mm, rescan=rescan, sha_filter=sha)
         except InsufficientFundsError as exc:
             console.print(
                 f"\n[bold red]⛔ API funds exhausted — scanning stopped.[/bold red]\n"

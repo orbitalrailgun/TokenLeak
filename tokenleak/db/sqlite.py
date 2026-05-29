@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
+
+UTC = timezone.utc
 from pathlib import Path
 from typing import Optional
 
@@ -32,19 +34,27 @@ class SQLiteDB(Database):
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA_SQLITE)
         self._migrate_alerts()
+        self._migrate_scans()
         self._conn.commit()
 
     def _migrate_alerts(self) -> None:
         """Add new columns to alerts table for databases created before this migration."""
         existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(alerts)")}
         migrations = [
-            ("repo_id",     "INTEGER REFERENCES repos(id)"),
-            ("commit_sha",  "TEXT"),
-            ("commit_date", "DATETIME"),
+            ("repo_id",      "INTEGER REFERENCES repos(id)"),
+            ("commit_sha",   "TEXT"),
+            ("commit_date",  "DATETIME"),
+            ("triggered_by", "TEXT"),
         ]
         for col_name, col_def in migrations:
             if col_name not in existing:
                 self._conn.execute(f"ALTER TABLE alerts ADD COLUMN {col_name} {col_def}")
+
+    def _migrate_scans(self) -> None:
+        """Add new columns to scans table for databases created before this migration."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(scans)")}
+        if "scan_mode" not in existing:
+            self._conn.execute("ALTER TABLE scans ADD COLUMN scan_mode TEXT")
 
     def close(self) -> None:
         if self._conn:
@@ -80,16 +90,23 @@ class SQLiteDB(Database):
         ).fetchone()
         return ScanRow(**row) if row else None
 
+    def get_scan_by_id(self, scan_id: int) -> Optional[ScanRow]:
+        row = self._cx().execute(
+            "SELECT * FROM scans WHERE id = ?", (scan_id,)
+        ).fetchone()
+        return ScanRow(**row) if row else None
+
     def create_scan(self, repo_id: int, commit_sha: str, commit_message: str,
-                    commit_author: str, commit_date: Optional[datetime]) -> int:
+                    commit_author: str, commit_date: Optional[datetime],
+                    scan_mode: str = "diff") -> int:
         cx = self._cx()
         cx.execute(
             """INSERT OR IGNORE INTO scans
-               (repo_id, commit_sha, commit_message, commit_author, commit_date, status)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (repo_id, commit_sha, commit_message, commit_author, commit_date, status, scan_mode)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (repo_id, commit_sha, commit_message, commit_author,
              commit_date.isoformat() if commit_date else None,
-             ScanStatus.PENDING),
+             ScanStatus.PENDING, scan_mode),
         )
         cx.commit()
         # Always SELECT — INSERT OR IGNORE may silently skip on UNIQUE conflict,
@@ -104,7 +121,7 @@ class SQLiteDB(Database):
         cx = self._cx()
         cx.execute(
             "UPDATE scans SET status = ?, scan_started_at = ? WHERE id = ?",
-            (ScanStatus.RUNNING, datetime.utcnow().isoformat(), scan_id),
+            (ScanStatus.RUNNING, datetime.now(UTC).isoformat(), scan_id),
         )
         cx.commit()
 
@@ -121,7 +138,7 @@ class SQLiteDB(Database):
                SET status = ?, scan_finished_at = ?,
                    alert_count = ?, note_count = ?, error_message = ?
                WHERE id = ?""",
-            (status, datetime.utcnow().isoformat(), alert_count, note_count, error, scan_id),
+            (status, datetime.now(UTC).isoformat(), alert_count, note_count, error, scan_id),
         )
         cx.commit()
 
@@ -158,18 +175,20 @@ class SQLiteDB(Database):
         repo_id: Optional[int] = None,
         commit_sha: Optional[str] = None,
         commit_date=None,
+        triggered_by: Optional[str] = None,
     ) -> int:
         cx = self._cx()
         cur = cx.execute(
             """INSERT INTO alerts
                (scan_id, repo_id, commit_sha, commit_date,
-                file_path, line_start, line_end, alert_type, severity, agent_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                file_path, line_start, line_end, alert_type, severity, agent_json, triggered_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 scan_id, repo_id, commit_sha,
                 commit_date.isoformat() if commit_date else None,
                 file_path, line_start, line_end, alert_type, severity,
                 json.dumps(agent_json, ensure_ascii=False),
+                triggered_by,
             ),
         )
         cx.commit()

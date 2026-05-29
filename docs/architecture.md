@@ -19,9 +19,10 @@ CLI (python -m tokenleak)
     │
     ├── scanner/         — Local analysis of cloned repos
     │   ├── clone.py     — Safe git clone (no hooks, no exec bits)
-    │   ├── walker.py    — Walk full git commit history
+    │   ├── walker.py    — Walk full git commit history; extract images/notebooks
     │   ├── extractor.py — Read text files; extract strings from binaries
-    │   └── prefilter.py — Shannon entropy + regex patterns (optional)
+    │   ├── prefilter.py — Shannon entropy + regex patterns (optional)
+    │   └── ocr.py       — Vision-model analysis of images and Jupyter notebooks
     │
     ├── mcp_server/
     │   └── server.py    — FastMCP server with agent tools
@@ -118,26 +119,43 @@ Defines the tools the AI agent can call:
 | `get_commit_log` | Get git log text |
 | `get_file_tree` | Get file tree at HEAD |
 | `send_mattermost` | Send notification to Mattermost |
+| `analyze_image_file` | OCR-scan an image file or Jupyter notebook for sensitive data |
 
 The server can run in two modes:
 1. **Embedded**: tool functions called directly from `agent/runner.py` via `TOOLS` dict
 2. **Standalone**: `python -m tokenleak mcp` starts the FastMCP stdio server
 
 ### Agent (`agent/runner.py`)
-Two-pass agent loop per repository:
 
-**Pass 1 — Map**
+Two scan modes are provided:
+
+**Diff mode** — used for individual commits in `scan`:
+- Extracts only the added lines of the commit via `git show --unified=0`
+- Pre-filters lines with entropy + regex; sends candidates to the AI in a single pass
+- Agent calls `save_alert()` directly — no read_file loop needed
+- Agent can still call `read_file()` for surrounding context
+
+**Full mode** — used for HEAD in `scan` (first run) and `rescan`:
+
+*Pass 1 — Map*
 - Input: file tree + commit log (up to 200 entries)
 - Agent identifies high-risk areas and saves a risk map via `save_note()`
 - No alerts saved in this pass
 
-**Pass 2 — Deep Scan**
+*Pass 2 — Deep Scan*
 - Agent reads its Pass 1 notes, then reads individual files
 - For each confirmed finding: calls `save_alert()`
 - Uses `read_file_at_commit()` for deleted historical files
 - Loop runs until agent returns a message with no tool calls, or `ai_max_iterations`
 
+**OCR pass** (when `TOKENLEAK_OCR_MODEL` is set):
+- Runs after the diff/full scan pass
+- Sends all images and Jupyter notebook outputs to the vision model
+- Findings saved directly to the database without an agent loop
+
 Token counts are accumulated from API responses and stored in the `scans` table.
+Billing errors (`InsufficientFundsError`) stop scanning immediately and surface a
+clear message to the user.
 
 ### Database
 
@@ -150,10 +168,18 @@ Schema:
 
 ```
 repos   — known repositories
-scans   — one row per (repo, commit_sha); tracks status and token usage
-alerts  — findings with agent JSON payload
+scans   — one row per (repo, commit_sha); tracks status, scan_mode, and token usage
+alerts  — findings with agent JSON payload, commit context, and triggered_by label
 notes   — agent's intermediate notes per scan
 ```
+
+Key fields added in recent versions:
+- `scans.scan_mode` — `"full"` or `"diff"`, records how a commit was processed
+- `alerts.repo_id`, `alerts.commit_sha`, `alerts.commit_date` — links alert to its origin commit
+- `alerts.triggered_by` — `"scan"` or `"rescan"`, records which command generated the alert
+
+Both SQLite and PostgreSQL implementations apply migrations automatically on startup —
+no manual schema changes are needed when upgrading.
 
 ## Data flow
 
@@ -164,17 +190,26 @@ notes   — agent's intermediate notes per scan
 4. For each URL:
    a. git clone (safe)
    b. Check repo size → skip if too large (log + Mattermost)
-   c. git log → list commits
-   d. For each commit not in DB (or rescan mode):
-      i.  Create scan row (status=pending)
-      ii. Run agent (Pass 1 + Pass 2)
-          - Agent calls MCP tools → alerts/notes written to DB
-      iii. Update scan status (done/error)
-      iv. Generate report if --report
-      v.  Send Mattermost summary
-   e. Delete clone from disk
+   c. git log → list all commits (skip merge commits)
+   d. Determine scan strategy:
+      - First run or rescan:
+          i.  Full scan of HEAD (Pass 1 + Pass 2 + OCR)
+          ii. Diff scan of every historical commit
+      - Subsequent scan:
+          i.  Diff scan of commits newer than last successful scan only
+   e. For each scan:
+      i.   Create scan row (status=pending, scan_mode=full|diff)
+      ii.  Run agent → alerts/notes written to DB (triggered_by=scan|rescan)
+      iii. Run OCR pass if TOKENLEAK_OCR_MODEL is set
+      iv.  Update scan status (done/error)
+      v.   Generate report if --report
+      vi.  Send Mattermost summary
+   f. Delete clone from disk (try/finally — always runs)
 5. Release PID lock
 ```
+
+If the AI API returns a billing error at any point, scanning stops immediately
+and the user sees a clear "API funds exhausted" message.
 
 ## Security considerations
 

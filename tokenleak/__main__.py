@@ -26,7 +26,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # ── scan ──────────────────────────────────────────────────────────────────
-    scan_p = sub.add_parser("scan", help="Scan repositories — diff mode by default (fast)")
+    scan_p = sub.add_parser(
+        "scan",
+        help="Scan repositories (first run: full HEAD + diff history; subsequent: diff new commits only)",
+    )
     scan_p.add_argument(
         "targets",
         nargs="*",
@@ -34,7 +37,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Git URL(s) or specifiers (github:user, gitlab:user, server:URL). "
              "Reads from repos list if omitted.",
     )
-    scan_p.add_argument("--sha", metavar="SHA", help="Scan only this specific commit SHA")
+    scan_p.add_argument("--sha", metavar="SHA", help="Diff-scan only this specific commit SHA")
     scan_p.add_argument(
         "--report",
         nargs="?",
@@ -42,25 +45,15 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="Write Markdown report to FILE (omit FILE to print to stdout)",
     )
-    scan_p.add_argument(
-        "--full-scan",
-        action="store_true",
-        help="Two-pass full-file scan instead of diff-only (slower, more thorough)",
-    )
 
     # ── rescan ────────────────────────────────────────────────────────────────
     rescan_p = sub.add_parser(
         "rescan",
-        help="Force rescan (ignore already-scanned commits) — full-scan by default",
+        help="Re-scan as if first run: full scan HEAD + diff scan all history",
     )
     rescan_p.add_argument("targets", nargs="*", metavar="TARGET")
-    rescan_p.add_argument("--sha", metavar="SHA")
+    rescan_p.add_argument("--sha", metavar="SHA", help="Full-scan at this specific commit SHA")
     rescan_p.add_argument("--report", nargs="?", const="-", metavar="FILE")
-    rescan_p.add_argument(
-        "--diff",
-        action="store_true",
-        help="Use diff mode for rescan instead of full-file",
-    )
 
     # ── status ────────────────────────────────────────────────────────────────
     sub.add_parser("status", help="Show scan summary from the database")
@@ -102,17 +95,10 @@ def main() -> None:
             sys.exit(1)
 
         try:
-            # scan → diff mode by default; rescan → full mode by default
-            if args.command == "rescan":
-                full_scan = not getattr(args, "diff", False)
-            else:
-                full_scan = getattr(args, "full_scan", False)
-
             cmd_scan(
                 targets=getattr(args, "targets", []),
                 sha=getattr(args, "sha", None),
                 rescan=(args.command == "rescan"),
-                full_scan=full_scan,
                 config=config,
             )
         finally:

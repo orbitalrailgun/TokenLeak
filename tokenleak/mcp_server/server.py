@@ -38,6 +38,7 @@ _ocr_model: str = ""
 _repo_id: Optional[int] = None
 _commit_sha: str = ""
 _commit_date = None  # datetime | None
+_triggered_by: Optional[str] = None
 
 
 def init_context(
@@ -50,10 +51,11 @@ def init_context(
     repo_id: Optional[int] = None,
     commit_sha: str = "",
     commit_date=None,
+    triggered_by: Optional[str] = None,
 ) -> None:
     global _db, _scan_id, _repo_path, _notifications
     global _ocr_client, _ocr_model
-    global _repo_id, _commit_sha, _commit_date
+    global _repo_id, _commit_sha, _commit_date, _triggered_by
     _db = db
     _scan_id = scan_id
     _repo_path = repo_path
@@ -63,6 +65,7 @@ def init_context(
     _repo_id = repo_id
     _commit_sha = commit_sha
     _commit_date = commit_date
+    _triggered_by = triggered_by
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
@@ -104,6 +107,7 @@ def save_alert(
         repo_id=_repo_id,
         commit_sha=_commit_sha or None,
         commit_date=_commit_date,
+        triggered_by=_triggered_by,
     )
     log.info("[ALERT #%d] %s severity=%s file=%s", alert_id, alert_type, severity, file_path)
     return f"Alert #{alert_id} saved."

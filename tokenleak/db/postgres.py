@@ -46,13 +46,17 @@ class PostgresDB(Database):
                     cur.execute(stmt)
             # Migrate: add columns introduced after initial schema
             for col_name, col_def in [
-                ("repo_id",     "INTEGER REFERENCES repos(id)"),
-                ("commit_sha",  "TEXT"),
-                ("commit_date", "TIMESTAMPTZ"),
+                ("repo_id",      "INTEGER REFERENCES repos(id)"),
+                ("commit_sha",   "TEXT"),
+                ("commit_date",  "TIMESTAMPTZ"),
+                ("triggered_by", "TEXT"),
             ]:
                 cur.execute(
                     f"ALTER TABLE alerts ADD COLUMN IF NOT EXISTS {col_name} {col_def}"
                 )
+            cur.execute(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS scan_mode TEXT"
+            )
         self._conn.commit()
 
     def close(self) -> None:
@@ -110,15 +114,20 @@ class PostgresDB(Database):
         )
         return ScanRow(**row) if row else None
 
+    def get_scan_by_id(self, scan_id: int) -> Optional[ScanRow]:
+        row = self._fetchone("SELECT * FROM scans WHERE id = %s", (scan_id,))
+        return ScanRow(**row) if row else None
+
     def create_scan(self, repo_id: int, commit_sha: str, commit_message: str,
-                    commit_author: str, commit_date: Optional[datetime]) -> int:
+                    commit_author: str, commit_date: Optional[datetime],
+                    scan_mode: str = "diff") -> int:
         row = self._fetchone(
             """INSERT INTO scans
-               (repo_id, commit_sha, commit_message, commit_author, commit_date, status)
-               VALUES (%s, %s, %s, %s, %s, %s)
+               (repo_id, commit_sha, commit_message, commit_author, commit_date, status, scan_mode)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (repo_id, commit_sha) DO NOTHING
                RETURNING id""",
-            (repo_id, commit_sha, commit_message, commit_author, commit_date, ScanStatus.PENDING),
+            (repo_id, commit_sha, commit_message, commit_author, commit_date, ScanStatus.PENDING, scan_mode),
         )
         self._conn.commit()
         if row:
@@ -179,17 +188,19 @@ class PostgresDB(Database):
         repo_id: Optional[int] = None,
         commit_sha: Optional[str] = None,
         commit_date=None,
+        triggered_by: Optional[str] = None,
     ) -> int:
         row = self._fetchone(
             """INSERT INTO alerts
                (scan_id, repo_id, commit_sha, commit_date,
-                file_path, line_start, line_end, alert_type, severity, agent_json)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                file_path, line_start, line_end, alert_type, severity, agent_json, triggered_by)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id""",
             (
                 scan_id, repo_id, commit_sha, commit_date,
                 file_path, line_start, line_end, alert_type, severity,
                 json.dumps(agent_json, ensure_ascii=False),
+                triggered_by,
             ),
         )
         self._conn.commit()

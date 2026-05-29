@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS scans (
     scan_started_at DATETIME,
     scan_finished_at DATETIME,
     status          TEXT NOT NULL DEFAULT 'pending',
+    scan_mode       TEXT,
     alert_count     INTEGER DEFAULT 0,
     note_count      INTEGER DEFAULT 0,
     tokens_used     INTEGER DEFAULT 0,
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     alert_type        TEXT,
     severity          TEXT,
     agent_json        TEXT,
+    triggered_by      TEXT,
     is_false_positive INTEGER DEFAULT 0,
     created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -80,6 +82,7 @@ CREATE TABLE IF NOT EXISTS scans (
     scan_started_at  TIMESTAMPTZ,
     scan_finished_at TIMESTAMPTZ,
     status           TEXT NOT NULL DEFAULT 'pending',
+    scan_mode        TEXT,
     alert_count      INTEGER DEFAULT 0,
     note_count       INTEGER DEFAULT 0,
     tokens_used      INTEGER DEFAULT 0,
@@ -99,6 +102,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     alert_type        TEXT,
     severity          TEXT,
     agent_json        JSONB,
+    triggered_by      TEXT,
     is_false_positive BOOLEAN DEFAULT FALSE,
     created_at        TIMESTAMPTZ DEFAULT NOW()
 );
@@ -146,6 +150,7 @@ class ScanRow:
     scan_started_at: Optional[datetime] = None
     scan_finished_at: Optional[datetime] = None
     error_message: Optional[str] = None
+    scan_mode: Optional[str] = None
 
 
 @dataclass
@@ -158,6 +163,7 @@ class AlertRow:
     alert_type: Optional[str]
     severity: Optional[str]
     agent_json: dict = field(default_factory=dict)
+    triggered_by: Optional[str] = None
     is_false_positive: bool = False
     created_at: Optional[datetime] = None
     repo_id: Optional[int] = None
@@ -189,8 +195,12 @@ class Database(ABC):
     def get_scan(self, repo_id: int, commit_sha: str) -> Optional[ScanRow]: ...
 
     @abstractmethod
+    def get_scan_by_id(self, scan_id: int) -> Optional[ScanRow]: ...
+
+    @abstractmethod
     def create_scan(self, repo_id: int, commit_sha: str, commit_message: str,
-                    commit_author: str, commit_date: Optional[datetime]) -> int: ...
+                    commit_author: str, commit_date: Optional[datetime],
+                    scan_mode: str = "diff") -> int: ...
 
     @abstractmethod
     def start_scan(self, scan_id: int) -> None: ...
@@ -219,6 +229,7 @@ class Database(ABC):
         repo_id: Optional[int] = None,
         commit_sha: Optional[str] = None,
         commit_date: Optional[datetime] = None,
+        triggered_by: Optional[str] = None,
     ) -> int: ...
 
     @abstractmethod

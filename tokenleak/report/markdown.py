@@ -3,48 +3,65 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from tokenleak.db.base import AlertRow, Database, ScanRow
 
 
-def _severity_emoji(severity: str) -> str:
-    return {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}.get(severity, "⚪")
+def _severity_emoji(severity: Optional[str]) -> str:
+    return {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}.get(
+        severity or "", "⚪"
+    )
+
+
+def _fmt(value) -> str:
+    """Format a value for display — replaces None with 'N/A'."""
+    if value is None:
+        return "N/A"
+    return str(value)
 
 
 def generate(db: Database, scan_id: int, repo_url: str) -> str:
-    scan_rows = db.list_scans()
-    scan = next((s for s in scan_rows if s.id == scan_id), None)
+    scan = db.get_scan_by_id(scan_id)
     alerts = db.list_alerts(scan_id)
     notes = db.list_notes(scan_id)
 
+    # ── Header ─────────────────────────────────────────────────────────────────
     lines = [
-        f"# TokenLeak Report",
-        f"",
+        "# TokenLeak Report",
+        "",
         f"**Repository:** `{repo_url}`",
         f"**Scan ID:** {scan_id}",
-        f"**Commit:** `{scan.commit_sha[:12] if scan else 'N/A'}`",
-        f"**Started:** {scan.scan_started_at or 'N/A'}",
-        f"**Finished:** {scan.scan_finished_at or 'N/A'}",
-        f"**Status:** {scan.status if scan else 'N/A'}",
-        f"**Tokens used:** {scan.tokens_used:,}" if scan else "",
-        f"",
-        f"---",
-        f"",
     ]
+
+    if scan:
+        lines += [
+            f"**Commit:** `{scan.commit_sha[:12] if scan.commit_sha else 'N/A'}`",
+            f"**Commit date:** {_fmt(scan.commit_date)}",
+            f"**Commit author:** {_fmt(scan.commit_author)}",
+            f"**Scan mode:** {scan.scan_mode or 'N/A'}",
+            f"**Started:** {_fmt(scan.scan_started_at)}",
+            f"**Finished:** {_fmt(scan.scan_finished_at)}",
+            f"**Status:** {scan.status}",
+            f"**Tokens used:** {scan.tokens_used:,}",
+        ]
+        if scan.error_message:
+            lines.append(f"**Error:** {scan.error_message}")
+    else:
+        lines.append("*(scan record not found)*")
+
+    lines += ["", "---", ""]
 
     # ── Summary ────────────────────────────────────────────────────────────────
     if alerts:
         severity_counts: dict[str, int] = {}
         for a in alerts:
-            severity_counts[a.severity or "unknown"] = severity_counts.get(a.severity or "unknown", 0) + 1
+            key = a.severity or "unknown"
+            severity_counts[key] = severity_counts.get(key, 0) + 1
 
-        lines += [
-            f"## Summary: {len(alerts)} alert(s) found",
-            "",
-        ]
-        for sev in ["critical", "high", "medium", "low", "unknown"]:
+        lines += [f"## Summary: {len(alerts)} alert(s) found", ""]
+        for sev in ("critical", "high", "medium", "low", "unknown"):
             c = severity_counts.get(sev, 0)
             if c:
                 lines.append(f"- {_severity_emoji(sev)} **{sev.upper()}**: {c}")
@@ -58,31 +75,41 @@ def generate(db: Database, scan_id: int, repo_url: str) -> str:
         lines.append("")
         for idx, alert in enumerate(alerts, start=1):
             aj = alert.agent_json or {}
+            sev = alert.severity or "unknown"
+            fpath = alert.file_path or "(unknown file)"
+            atype = (alert.alert_type or "?").upper()
+
             lines += [
-                f"### [{idx}] {_severity_emoji(alert.severity)} {(alert.alert_type or '?').upper()} — `{alert.file_path}`",
-                f"",
-                f"**Severity:** {alert.severity}  ",
+                f"### [{idx}] {_severity_emoji(sev)} {atype} — `{fpath}`",
+                "",
+                f"**Severity:** {sev}  ",
                 f"**Lines:** {alert.line_start}–{alert.line_end}  ",
-                f"",
-                f"**Description:** {aj.get('description', 'N/A')}",
-                f"",
             ]
+
+            if alert.commit_sha:
+                sha_short = alert.commit_sha[:12]
+                date_str = f"  ({_fmt(alert.commit_date)})" if alert.commit_date else ""
+                lines.append(f"**Commit:** `{sha_short}`{date_str}  ")
+
+            if alert.triggered_by:
+                lines.append(f"**Triggered by:** {alert.triggered_by}  ")
+
+            lines += ["", f"**Description:** {aj.get('description', 'N/A')}", ""]
+
             if aj.get("code_snippet"):
                 lines += [
-                    f"**Snippet:**",
-                    f"```",
+                    "**Snippet:**",
+                    "```",
                     aj["code_snippet"][:1000],
-                    f"```",
-                    f"",
+                    "```",
+                    "",
                 ]
             if aj.get("how_used"):
-                lines.append(f"**How used:** {aj['how_used']}")
-                lines.append("")
+                lines += [f"**How used:** {aj['how_used']}", ""]
             if aj.get("confirmation"):
-                lines.append(f"**Confirmation:** {aj['confirmation']}")
-                lines.append("")
-            lines.append("---")
-            lines.append("")
+                lines += [f"**Confirmation:** {aj['confirmation']}", ""]
+
+            lines += ["---", ""]
 
     # ── Notes ──────────────────────────────────────────────────────────────────
     if notes:
@@ -91,10 +118,10 @@ def generate(db: Database, scan_id: int, repo_url: str) -> str:
             lines += [f"### Note {i}", "", note, ""]
 
     lines += [
-        f"---",
-        f"*Generated by TokenLeak at {datetime.utcnow().isoformat()}Z*",
+        "---",
+        f"*Generated by TokenLeak at {datetime.now(timezone.utc).isoformat()}*",
     ]
-    return "\n".join(lines)
+    return "\n".join(line for line in lines if line is not None)
 
 
 def write_report(content: str, output: Optional[str]) -> None:
