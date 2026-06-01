@@ -41,6 +41,7 @@ def generate(db: Database, scan_id: int, repo_url: str) -> str:
             f"**Commit date:** {_fmt(scan.commit_date)}",
             f"**Commit author:** {_fmt(scan.commit_author)}",
             f"**Scan mode:** {scan.scan_mode or 'N/A'}",
+            f"**AI model:** {scan.ai_model or 'N/A'}",
             f"**Started:** {_fmt(scan.scan_started_at)}",
             f"**Finished:** {_fmt(scan.scan_finished_at)}",
             f"**Status:** {scan.status}",
@@ -93,6 +94,8 @@ def generate(db: Database, scan_id: int, repo_url: str) -> str:
 
             if alert.triggered_by:
                 lines.append(f"**Triggered by:** {alert.triggered_by}  ")
+            if alert.ai_model:
+                lines.append(f"**AI model:** {alert.ai_model}  ")
 
             lines += ["", f"**Description:** {aj.get('description', 'N/A')}", ""]
 

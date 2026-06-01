@@ -85,7 +85,8 @@ class TokenCounter:
     # ── Thread ────────────────────────────────────────────────────────────────
 
     def _animate(self) -> None:
-        with Live(self._render(), console=_console, refresh_per_second=6) as live:
+        # transient=True erases the live block when it exits — no residual frames per commit.
+        with Live(self._render(), console=_console, refresh_per_second=6, transient=True) as live:
             self._live = live
             while self._running:
                 time.sleep(1 / 6)
@@ -104,10 +105,13 @@ class TokenCounter:
         self._running = False
         if self._thread:
             self._thread.join(timeout=2)
-        if not _ENABLED:
+        commit = f"[{self._commit_sha}] " if self._commit_sha else ""
+        if self._total > 0:
             _console.print(
-                f"[yellow]Tokens used:[/yellow] [bold red]{self._total:,}[/bold red]"
+                f"[yellow]💸 {commit}[/yellow][bold red]{self._total:,} tokens[/bold red]"
             )
+        else:
+            _console.print(f"[dim]  · {commit}0 tokens[/dim]")
 
 
 def simple_print(total_tokens: int) -> None:

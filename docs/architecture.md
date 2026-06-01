@@ -105,7 +105,10 @@ The `__init__.py` dispatcher handles the target format:
   every file is sent to the AI
 
 ### FastMCP Server (`mcp_server/server.py`)
-Defines the tools the AI agent can call:
+Defines the tools the AI agent can call. File paths received from the agent in `save_alert()`
+are normalized before storage: Unicode confusable characters (non-breaking hyphens, en/em
+dashes, fullwidth variants, etc.) are replaced with their ASCII equivalents and the string is
+NFC-normalized, with a `WARNING` log entry when a change occurs.
 
 | Tool | Purpose |
 |------|---------|
@@ -124,6 +127,17 @@ Defines the tools the AI agent can call:
 The server can run in two modes:
 1. **Embedded**: tool functions called directly from `agent/runner.py` via `TOOLS` dict
 2. **Standalone**: `python -m tokenleak mcp` starts the FastMCP stdio server
+
+### Agent (`agent/client.py`)
+
+`build_client()` returns a unified `OpenAI` client for both OpenAI-compatible providers and
+Ollama. The `chat()` function wraps all API calls and raises typed exceptions instead of
+propagating raw API errors:
+
+- `InsufficientFundsError` — billing / quota exhaustion; fatal, stops scanning immediately
+- `ContextWindowExceededError` — conversation history grew beyond the model's context window;
+  non-fatal: the agent loop catches it, preserves all alerts saved so far, and moves on to the
+  next commit
 
 ### Agent (`agent/runner.py`)
 
@@ -168,18 +182,31 @@ Schema:
 
 ```
 repos   — known repositories
-scans   — one row per (repo, commit_sha); tracks status, scan_mode, and token usage
+scans   — one row per (repo, commit_sha, ai_model); tracks status, scan_mode, and token usage
 alerts  — findings with agent JSON payload, commit context, and triggered_by label
 notes   — agent's intermediate notes per scan
 ```
 
-Key fields added in recent versions:
+The `scans` table has a `UNIQUE(repo_id, commit_sha, ai_model)` constraint, so multiple
+models can each hold their own scan rows for the same commit in the same database. This is
+the foundation of multi-model comparison without separate DB files.
+
+Key fields:
 - `scans.scan_mode` — `"full"` or `"diff"`, records how a commit was processed
+- `scans.ai_model` — which model produced this scan row
 - `alerts.repo_id`, `alerts.commit_sha`, `alerts.commit_date` — links alert to its origin commit
 - `alerts.triggered_by` — `"scan"` or `"rescan"`, records which command generated the alert
+- `alerts.ai_model` — which model produced this alert
+
+Key API additions:
+- `list_scans(repo_id, ai_model=None)` — filter scans by model; used by `done_shas` logic so a second model never skips commits already scanned by the first
+- `list_alerts_for_repo(repo_id, ai_model=None)` — return all alerts for a repo, optionally filtered by model; avoids joining individual scan IDs for cross-model queries
+- `get_scan(repo_id, commit_sha, ai_model=None)` — returns the model-specific scan row, or the most recent one if `ai_model` is not given
 
 Both SQLite and PostgreSQL implementations apply migrations automatically on startup —
-no manual schema changes are needed when upgrading.
+no manual schema changes are needed when upgrading. The constraint migration from the
+older `UNIQUE(repo_id, commit_sha)` runs automatically: SQLite recreates the table,
+PostgreSQL uses `ALTER TABLE DROP CONSTRAINT / ADD CONSTRAINT`.
 
 ## Data flow
 

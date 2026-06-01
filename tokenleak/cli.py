@@ -135,7 +135,7 @@ def scan_repo(
                 console.print(f"[dim]Mode: full (rescan --sha) | Commit: {target.sha[:8]}[/dim]")
                 scan_id = db.create_scan(
                     repo_id, target.sha, target.message, target.author, target.date,
-                    scan_mode="full",
+                    scan_mode="full", ai_model=config.ai_model,
                 )
                 db.start_scan(scan_id)
                 counter = TokenCounter(repo=url, model=config.ai_model)
@@ -163,7 +163,7 @@ def scan_repo(
                 console.print(f"[dim]Mode: diff (scan --sha) | Commit: {target.sha[:8]}[/dim]")
                 scan_id = db.create_scan(
                     repo_id, target.sha, target.message, target.author, target.date,
-                    scan_mode="diff",
+                    scan_mode="diff", ai_model=config.ai_model,
                 )
                 db.start_scan(scan_id)
                 counter = TokenCounter(repo=url, model=config.ai_model)
@@ -196,7 +196,11 @@ def scan_repo(
         done_shas: set[str] = set()
         if not rescan:
             for s in db.list_scans(repo_id=repo_id):
-                if s.status == ScanStatus.DONE:
+                # Include scans for the current model AND legacy scans where
+                # ai_model is NULL (created before per-model tracking was added).
+                if s.status == ScanStatus.DONE and (
+                    s.ai_model == config.ai_model or s.ai_model is None
+                ):
                     done_shas.add(s.commit_sha)
 
         first_run = rescan or not done_shas
@@ -209,6 +213,7 @@ def scan_repo(
                 scan_id = db.create_scan(
                     repo_id, head_commit.sha, head_commit.message,
                     head_commit.author, head_commit.date, scan_mode="full",
+                    ai_model=config.ai_model,
                 )
                 db.start_scan(scan_id)
                 counter = TokenCounter(repo=url, model=config.ai_model)
@@ -248,7 +253,7 @@ def scan_repo(
 
             scan_id = db.create_scan(
                 repo_id, commit.sha, commit.message, commit.author, commit.date,
-                scan_mode="diff",
+                scan_mode="diff", ai_model=config.ai_model,
             )
             db.start_scan(scan_id)
             counter = TokenCounter(repo=url, model=config.ai_model)

@@ -50,14 +50,64 @@ class PostgresDB(Database):
                 ("commit_sha",   "TEXT"),
                 ("commit_date",  "TIMESTAMPTZ"),
                 ("triggered_by", "TEXT"),
+                ("ai_model",     "TEXT"),
             ]:
                 cur.execute(
                     f"ALTER TABLE alerts ADD COLUMN IF NOT EXISTS {col_name} {col_def}"
                 )
-            cur.execute(
-                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS scan_mode TEXT"
-            )
+            for col_name, col_def in [
+                ("scan_mode", "TEXT"),
+                ("ai_model",  "TEXT"),
+            ]:
+                cur.execute(
+                    f"ALTER TABLE scans ADD COLUMN IF NOT EXISTS {col_name} {col_def}"
+                )
+            self._migrate_scans_constraint(cur)
         self._conn.commit()
+
+    def _migrate_scans_constraint(self, cur) -> None:
+        """Change UNIQUE(repo_id, commit_sha) → UNIQUE(repo_id, commit_sha, ai_model).
+
+        Drops the old 2-column constraint (if present) and adds the 3-column one.
+        """
+        # Find unique constraint on scans that does NOT include ai_model
+        cur.execute("""
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE t.relname = 'scans'
+              AND n.nspname = current_schema()
+              AND c.contype = 'u'
+              AND NOT EXISTS (
+                  SELECT 1 FROM unnest(c.conkey) AS k
+                  JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k
+                  WHERE a.attname = 'ai_model'
+              )
+        """)
+        old = cur.fetchone()
+        if old:
+            cur.execute(f'ALTER TABLE scans DROP CONSTRAINT "{old[0]}"')
+
+        # Add new 3-column constraint if not present
+        cur.execute("""
+            SELECT 1 FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE t.relname = 'scans'
+              AND n.nspname = current_schema()
+              AND c.contype = 'u'
+              AND EXISTS (
+                  SELECT 1 FROM unnest(c.conkey) AS k
+                  JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k
+                  WHERE a.attname = 'ai_model'
+              )
+        """)
+        if not cur.fetchone():
+            cur.execute(
+                "ALTER TABLE scans ADD CONSTRAINT scans_repo_id_commit_sha_ai_model_key "
+                "UNIQUE (repo_id, commit_sha, ai_model)"
+            )
 
     def close(self) -> None:
         if self._conn:
@@ -107,11 +157,18 @@ class PostgresDB(Database):
 
     # ── Scans ──────────────────────────────────────────────────────────────────
 
-    def get_scan(self, repo_id: int, commit_sha: str) -> Optional[ScanRow]:
-        row = self._fetchone(
-            "SELECT * FROM scans WHERE repo_id = %s AND commit_sha = %s",
-            (repo_id, commit_sha),
-        )
+    def get_scan(self, repo_id: int, commit_sha: str,
+                 ai_model: Optional[str] = None) -> Optional[ScanRow]:
+        if ai_model is not None:
+            row = self._fetchone(
+                "SELECT * FROM scans WHERE repo_id = %s AND commit_sha = %s AND ai_model IS NOT DISTINCT FROM %s",
+                (repo_id, commit_sha, ai_model or None),
+            )
+        else:
+            row = self._fetchone(
+                "SELECT * FROM scans WHERE repo_id = %s AND commit_sha = %s ORDER BY id DESC LIMIT 1",
+                (repo_id, commit_sha),
+            )
         return ScanRow(**row) if row else None
 
     def get_scan_by_id(self, scan_id: int) -> Optional[ScanRow]:
@@ -120,21 +177,25 @@ class PostgresDB(Database):
 
     def create_scan(self, repo_id: int, commit_sha: str, commit_message: str,
                     commit_author: str, commit_date: Optional[datetime],
-                    scan_mode: str = "diff") -> int:
+                    scan_mode: str = "diff", ai_model: str = "") -> int:
+        model = ai_model or None
         row = self._fetchone(
             """INSERT INTO scans
-               (repo_id, commit_sha, commit_message, commit_author, commit_date, status, scan_mode)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)
-               ON CONFLICT (repo_id, commit_sha) DO NOTHING
+               (repo_id, commit_sha, commit_message, commit_author, commit_date,
+                status, scan_mode, ai_model)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (repo_id, commit_sha, ai_model) DO NOTHING
                RETURNING id""",
-            (repo_id, commit_sha, commit_message, commit_author, commit_date, ScanStatus.PENDING, scan_mode),
+            (repo_id, commit_sha, commit_message, commit_author, commit_date,
+             ScanStatus.PENDING, scan_mode, model),
         )
         self._conn.commit()
         if row:
             return row["id"]
+        # INSERT was skipped (same model already scanned this commit); return existing ID.
         row = self._fetchone(
-            "SELECT id FROM scans WHERE repo_id = %s AND commit_sha = %s",
-            (repo_id, commit_sha),
+            "SELECT id FROM scans WHERE repo_id = %s AND commit_sha = %s AND ai_model IS NOT DISTINCT FROM %s",
+            (repo_id, commit_sha, model),
         )
         return row["id"]
 
@@ -165,13 +226,20 @@ class PostgresDB(Database):
             (tokens, scan_id),
         )
 
-    def list_scans(self, repo_id: Optional[int] = None) -> list[ScanRow]:
+    def list_scans(self, repo_id: Optional[int] = None,
+                   ai_model: Optional[str] = None) -> list[ScanRow]:
+        where: list[str] = []
+        params: list = []
         if repo_id:
-            rows = self._fetchall(
-                "SELECT * FROM scans WHERE repo_id = %s ORDER BY id DESC", (repo_id,)
-            )
-        else:
-            rows = self._fetchall("SELECT * FROM scans ORDER BY id DESC")
+            where.append("repo_id = %s")
+            params.append(repo_id)
+        if ai_model is not None:
+            where.append("ai_model IS NOT DISTINCT FROM %s")
+            params.append(ai_model or None)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = self._fetchall(
+            f"SELECT * FROM scans {clause} ORDER BY id DESC", tuple(params)
+        )
         return [ScanRow(**r) for r in rows]
 
     # ── Alerts ─────────────────────────────────────────────────────────────────
@@ -189,18 +257,20 @@ class PostgresDB(Database):
         commit_sha: Optional[str] = None,
         commit_date=None,
         triggered_by: Optional[str] = None,
+        ai_model: Optional[str] = None,
     ) -> int:
         row = self._fetchone(
             """INSERT INTO alerts
                (scan_id, repo_id, commit_sha, commit_date,
-                file_path, line_start, line_end, alert_type, severity, agent_json, triggered_by)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                file_path, line_start, line_end, alert_type, severity,
+                agent_json, triggered_by, ai_model)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id""",
             (
                 scan_id, repo_id, commit_sha, commit_date,
                 file_path, line_start, line_end, alert_type, severity,
                 json.dumps(agent_json, ensure_ascii=False),
-                triggered_by,
+                triggered_by, ai_model or None,
             ),
         )
         self._conn.commit()
@@ -210,6 +280,24 @@ class PostgresDB(Database):
         rows = self._fetchall(
             "SELECT * FROM alerts WHERE scan_id = %s ORDER BY id", (scan_id,)
         )
+        result = []
+        for r in rows:
+            if isinstance(r.get("agent_json"), str):
+                r["agent_json"] = json.loads(r["agent_json"] or "{}")
+            result.append(AlertRow(**r))
+        return result
+
+    def list_alerts_for_repo(self, repo_id: int,
+                             ai_model: Optional[str] = None) -> list[AlertRow]:
+        if ai_model is not None:
+            rows = self._fetchall(
+                "SELECT * FROM alerts WHERE repo_id = %s AND ai_model IS NOT DISTINCT FROM %s ORDER BY id",
+                (repo_id, ai_model or None),
+            )
+        else:
+            rows = self._fetchall(
+                "SELECT * FROM alerts WHERE repo_id = %s ORDER BY id", (repo_id,)
+            )
         result = []
         for r in rows:
             if isinstance(r.get("agent_json"), str):

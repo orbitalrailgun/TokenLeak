@@ -21,6 +21,7 @@ def _populate(db):
         commit_author="dev@example.com",
         commit_date=datetime(2026, 5, 1, 10, 0, 0),
         scan_mode="diff",
+        ai_model="gpt-4o",
     )
     db.start_scan(scan_id)
     db.save_alert(

@@ -13,6 +13,7 @@ via init_context().
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
 from typing import Any, Optional
 
@@ -35,6 +36,7 @@ _repo_path: Optional[Path] = None
 _notifications = None   # notifications.mattermost module reference
 _ocr_client = None
 _ocr_model: str = ""
+_ai_model: str = ""
 _repo_id: Optional[int] = None
 _commit_sha: str = ""
 _commit_date = None  # datetime | None
@@ -48,13 +50,14 @@ def init_context(
     notifications=None,
     ocr_client=None,
     ocr_model: str = "",
+    ai_model: str = "",
     repo_id: Optional[int] = None,
     commit_sha: str = "",
     commit_date=None,
     triggered_by: Optional[str] = None,
 ) -> None:
     global _db, _scan_id, _repo_path, _notifications
-    global _ocr_client, _ocr_model
+    global _ocr_client, _ocr_model, _ai_model
     global _repo_id, _commit_sha, _commit_date, _triggered_by
     _db = db
     _scan_id = scan_id
@@ -62,10 +65,49 @@ def init_context(
     _notifications = notifications
     _ocr_client = ocr_client
     _ocr_model = ocr_model
+    _ai_model = ai_model
     _repo_id = repo_id
     _commit_sha = commit_sha
     _commit_date = commit_date
     _triggered_by = triggered_by
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+# Unicode characters that look like ASCII hyphen-minus (U+002D) but aren't.
+# Models occasionally generate these when producing file paths.
+_HYPHEN_LOOKALIKES = str.maketrans({
+    '‐': '-',  # HYPHEN
+    '‑': '-',  # NON-BREAKING HYPHEN
+    '‒': '-',  # FIGURE DASH
+    '–': '-',  # EN DASH
+    '—': '-',  # EM DASH
+    '―': '-',  # HORIZONTAL BAR
+    '−': '-',  # MINUS SIGN
+    '﹘': '-',  # SMALL EM DASH
+    '﹣': '-',  # SMALL HYPHEN-MINUS
+    '－': '-',  # FULLWIDTH HYPHEN-MINUS
+})
+
+
+def _sanitize_path(path: Optional[str]) -> Optional[str]:
+    """Normalize Unicode confusable characters in file paths to ASCII equivalents.
+
+    Some models produce non-breaking hyphens or other Unicode lookalikes in file
+    paths, making the path impossible to resolve on the filesystem.  This function
+    replaces all known hyphen/dash lookalikes with a plain ASCII hyphen and applies
+    NFC normalization.  If the path was changed a WARNING is logged so the anomaly
+    is visible in the log.
+    """
+    if not path:
+        return path
+    normalized = unicodedata.normalize("NFC", path).translate(_HYPHEN_LOOKALIKES).strip()
+    if normalized != path:
+        log.warning(
+            "save_alert: file_path was normalized (Unicode confusables replaced): %r → %r",
+            path, normalized,
+        )
+    return normalized
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
@@ -102,12 +144,13 @@ def save_alert(
         "confirmation": confirmation,
     }
     alert_id = _db.save_alert(
-        _scan_id, file_path, line_start, line_end or line_start,
+        _scan_id, _sanitize_path(file_path), line_start, line_end or line_start,
         alert_type, severity, agent_json,
         repo_id=_repo_id,
         commit_sha=_commit_sha or None,
         commit_date=_commit_date,
         triggered_by=_triggered_by,
+        ai_model=_ai_model or None,
     )
     log.info("[ALERT #%d] %s severity=%s file=%s", alert_id, alert_type, severity, file_path)
     return f"Alert #{alert_id} saved."

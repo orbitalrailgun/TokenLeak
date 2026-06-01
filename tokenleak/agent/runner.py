@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
-from tokenleak.agent.client import build_client, chat, extract_usage
+from tokenleak.agent.client import build_client, chat, extract_usage, ContextWindowExceededError
 from tokenleak.config import Config
 from tokenleak.db.base import Database, ScanRow
 from tokenleak.logging_setup import get_logger
@@ -181,7 +181,17 @@ def _agent_loop(
     for iteration in range(max_iterations):
         if on_status:
             on_status(f"🧠 thinking… (iteration {iteration + 1})")
-        response = chat(client, model, messages, tools=tools)
+        try:
+            response = chat(client, model, messages, tools=tools)
+        except ContextWindowExceededError as exc:
+            log.warning(
+                "Context window exceeded after %d iteration(s) — stopping agent loop. "
+                "Alerts saved so far are preserved. (%s)",
+                iteration, exc,
+            )
+            if on_status:
+                on_status("⚠  context window full — stopping early")
+            break
         tokens = extract_usage(response)
         total_tokens += tokens
         if on_tokens:
@@ -251,11 +261,12 @@ def _ocr_images(
                 line_end=0,
                 alert_type="secret",
                 severity="high",
-                agent_json={"description": finding, "source": "ocr", "model": model},
+                agent_json={"description": finding, "source": "ocr"},
                 repo_id=repo_id,
                 commit_sha=commit_sha,
                 commit_date=commit_date,
                 triggered_by=triggered_by,
+                ai_model=model or None,
             )
             log.info("[scan %d] OCR alert in image file: %s", scan_id, img_path)
     return total
@@ -310,12 +321,12 @@ def _ocr_notebooks(
                         "description": finding,
                         "source": "ocr",
                         "cell_index": cell_idx,
-                        "model": model,
                     },
                     repo_id=repo_id,
                     commit_sha=commit_sha,
                     commit_date=commit_date,
                     triggered_by=triggered_by,
+                    ai_model=model or None,
                 )
                 log.info("[scan %d] OCR alert in notebook: %s cell[%d]", scan_id, nb_path, cell_idx)
     return total
@@ -512,6 +523,7 @@ def run_diff_scan(
         db, scan_id, repo_path, notifications,
         ocr_client=client if config.ocr_model else None,
         ocr_model=config.ocr_model,
+        ai_model=config.ai_model,
         repo_id=repo_id,
         commit_sha=commit_sha,
         commit_date=commit_date,
@@ -598,6 +610,7 @@ def run_full_scan(
         db, scan_id, repo_path, notifications,
         ocr_client=client if config.ocr_model else None,
         ocr_model=config.ocr_model,
+        ai_model=config.ai_model,
         repo_id=repo_id,
         commit_sha=commit_sha or "",
         commit_date=commit_date,

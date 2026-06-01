@@ -31,11 +31,12 @@ CREATE TABLE IF NOT EXISTS scans (
     scan_finished_at DATETIME,
     status          TEXT NOT NULL DEFAULT 'pending',
     scan_mode       TEXT,
+    ai_model        TEXT,
     alert_count     INTEGER DEFAULT 0,
     note_count      INTEGER DEFAULT 0,
     tokens_used     INTEGER DEFAULT 0,
     error_message   TEXT,
-    UNIQUE(repo_id, commit_sha)
+    UNIQUE(repo_id, commit_sha, ai_model)
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     severity          TEXT,
     agent_json        TEXT,
     triggered_by      TEXT,
+    ai_model          TEXT,
     is_false_positive INTEGER DEFAULT 0,
     created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -83,11 +85,12 @@ CREATE TABLE IF NOT EXISTS scans (
     scan_finished_at TIMESTAMPTZ,
     status           TEXT NOT NULL DEFAULT 'pending',
     scan_mode        TEXT,
+    ai_model         TEXT,
     alert_count      INTEGER DEFAULT 0,
     note_count       INTEGER DEFAULT 0,
     tokens_used      INTEGER DEFAULT 0,
     error_message    TEXT,
-    UNIQUE(repo_id, commit_sha)
+    UNIQUE(repo_id, commit_sha, ai_model)
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -103,6 +106,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     severity          TEXT,
     agent_json        JSONB,
     triggered_by      TEXT,
+    ai_model          TEXT,
     is_false_positive BOOLEAN DEFAULT FALSE,
     created_at        TIMESTAMPTZ DEFAULT NOW()
 );
@@ -151,6 +155,7 @@ class ScanRow:
     scan_finished_at: Optional[datetime] = None
     error_message: Optional[str] = None
     scan_mode: Optional[str] = None
+    ai_model: Optional[str] = None
 
 
 @dataclass
@@ -164,6 +169,7 @@ class AlertRow:
     severity: Optional[str]
     agent_json: dict = field(default_factory=dict)
     triggered_by: Optional[str] = None
+    ai_model: Optional[str] = None
     is_false_positive: bool = False
     created_at: Optional[datetime] = None
     repo_id: Optional[int] = None
@@ -192,7 +198,8 @@ class Database(ABC):
     # ── Scans ──────────────────────────────────────────────────────────────────
 
     @abstractmethod
-    def get_scan(self, repo_id: int, commit_sha: str) -> Optional[ScanRow]: ...
+    def get_scan(self, repo_id: int, commit_sha: str,
+                 ai_model: Optional[str] = None) -> Optional[ScanRow]: ...
 
     @abstractmethod
     def get_scan_by_id(self, scan_id: int) -> Optional[ScanRow]: ...
@@ -200,7 +207,7 @@ class Database(ABC):
     @abstractmethod
     def create_scan(self, repo_id: int, commit_sha: str, commit_message: str,
                     commit_author: str, commit_date: Optional[datetime],
-                    scan_mode: str = "diff") -> int: ...
+                    scan_mode: str = "diff", ai_model: str = "") -> int: ...
 
     @abstractmethod
     def start_scan(self, scan_id: int) -> None: ...
@@ -212,7 +219,8 @@ class Database(ABC):
     def update_scan_tokens(self, scan_id: int, tokens: int) -> None: ...
 
     @abstractmethod
-    def list_scans(self, repo_id: Optional[int] = None) -> list[ScanRow]: ...
+    def list_scans(self, repo_id: Optional[int] = None,
+                   ai_model: Optional[str] = None) -> list[ScanRow]: ...
 
     # ── Alerts ─────────────────────────────────────────────────────────────────
 
@@ -230,10 +238,21 @@ class Database(ABC):
         commit_sha: Optional[str] = None,
         commit_date: Optional[datetime] = None,
         triggered_by: Optional[str] = None,
+        ai_model: Optional[str] = None,
     ) -> int: ...
 
     @abstractmethod
     def list_alerts(self, scan_id: int) -> list[AlertRow]: ...
+
+    @abstractmethod
+    def list_alerts_for_repo(self, repo_id: int,
+                             ai_model: Optional[str] = None) -> list[AlertRow]:
+        """All alerts for a repo, optionally filtered by model.
+
+        Use this for cross-scan comparison queries instead of joining
+        individual scan IDs.
+        """
+        ...
 
     # ── Notes ──────────────────────────────────────────────────────────────────
 

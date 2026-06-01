@@ -13,6 +13,8 @@ using an AI agent with MCP tools.
 - **Diff scan** — fast, token-efficient: analyses only changed lines per commit
 - **OCR image analysis** — optional vision model scans images and Jupyter notebook outputs
 - **Pre-filter** — Shannon entropy + 25+ regex patterns reduce AI token usage
+- **Multi-model comparison** — scan the same repo with different models in one database; results isolated by `ai_model`
+- **Context window resilience** — gracefully stops the agent loop when the model's context limit is reached, preserving all alerts saved so far
 - **Multiple providers** — GitHub, GitLab (self-hosted), Gitea/Forgejo, plain git URLs
 - **OpenAI or Ollama** — configurable AI backend with custom URL support
 - **SQLite or PostgreSQL** — zero-config default, enterprise-ready option
@@ -210,6 +212,7 @@ pytest tests/ -v
 |----------|---------|
 | [docs/architecture.md](docs/architecture.md) | Component diagram and data flow |
 | [docs/workflow.md](docs/workflow.md) | Commands, target formats, flags reference |
+| [docs/model_comparison.md](docs/model_comparison.md) | Multi-model comparison in a single database |
 | [docs/postgresql_setup.md](docs/postgresql_setup.md) | PostgreSQL setup with security hardening |
 | [docs/deployment.md](docs/deployment.md) | Production deployment step-by-step |
 | [docs/cron_setup.md](docs/cron_setup.md) | Cron and systemd timer configuration |

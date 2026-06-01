@@ -81,6 +81,10 @@ but will catch anything the regex/entropy patterns might miss.
 **`rescan`** — always behaves like a first run regardless of what is in the database.
 Use after changing `agent.md`, switching AI models, or to re-verify from scratch.
 
+**Skip logic is model-scoped.** The set of already-scanned commits (`done_shas`) is
+always filtered by the current `TOKENLEAK_AI_MODEL`. A second model therefore never
+inherits the first model's completed scans — it treats every commit as new.
+
 ### Alert provenance
 
 Every alert records how it was triggered (`triggered_by` field in the database):
@@ -210,6 +214,47 @@ TOKENLEAK_AI_API_KEY=your-key
 TOKENLEAK_AI_API_URL=https://your-custom-endpoint/v1
 TOKENLEAK_AI_MODEL=your-model-name
 ```
+
+## Multi-model comparison
+
+TokenLeak supports scanning the same repository with multiple AI models in a single
+database. The `scans` table uses `UNIQUE(repo_id, commit_sha, ai_model)` so each model
+gets independent rows without any cross-contamination.
+
+**Typical workflow:**
+
+```bash
+# Step 1 — first model (normal scan)
+TOKENLEAK_AI_MODEL=openai/gpt-oss-120b \
+  python -m tokenleak scan https://github.com/org/target-repo
+
+# Step 2 — second model (rescan so it gets its own rows)
+TOKENLEAK_AI_MODEL=deepseek-ai/DeepSeek-V4-Pro \
+  python -m tokenleak rescan https://github.com/org/target-repo
+```
+
+**Why `rescan` for the second model?** A normal `scan` would also work (done_shas is
+model-scoped), but `rescan` is explicit and safe for all cases including repos that were
+already fully scanned by Model A.
+
+**Comparing results:**
+
+```bash
+TOKENLEAK_AI_MODEL=openai/gpt-oss-120b      python -m tokenleak report --output report_gpt.md
+TOKENLEAK_AI_MODEL=deepseek-ai/DeepSeek-V4-Pro python -m tokenleak report --output report_ds.md
+```
+
+Or query the database directly:
+
+```sql
+SELECT ai_model, severity, COUNT(*) AS n
+FROM alerts
+WHERE repo_id = (SELECT id FROM repos WHERE url = 'https://github.com/org/target-repo')
+GROUP BY ai_model, severity
+ORDER BY ai_model, severity;
+```
+
+See [model_comparison.md](model_comparison.md) for more SQL examples and details.
 
 ## Config repository
 

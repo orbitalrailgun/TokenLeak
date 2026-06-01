@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -35,6 +36,7 @@ class SQLiteDB(Database):
         self._conn.executescript(SCHEMA_SQLITE)
         self._migrate_alerts()
         self._migrate_scans()
+        self._migrate_scans_constraint()
         self._conn.commit()
 
     def _migrate_alerts(self) -> None:
@@ -45,6 +47,7 @@ class SQLiteDB(Database):
             ("commit_sha",   "TEXT"),
             ("commit_date",  "DATETIME"),
             ("triggered_by", "TEXT"),
+            ("ai_model",     "TEXT"),
         ]
         for col_name, col_def in migrations:
             if col_name not in existing:
@@ -55,6 +58,53 @@ class SQLiteDB(Database):
         existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(scans)")}
         if "scan_mode" not in existing:
             self._conn.execute("ALTER TABLE scans ADD COLUMN scan_mode TEXT")
+        if "ai_model" not in existing:
+            self._conn.execute("ALTER TABLE scans ADD COLUMN ai_model TEXT")
+
+    def _migrate_scans_constraint(self) -> None:
+        """Recreate scans table to broaden UNIQUE(repo_id, commit_sha) → UNIQUE(repo_id, commit_sha, ai_model).
+
+        SQLite cannot ALTER a UNIQUE constraint, so the table must be recreated.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='scans'"
+        ).fetchone()
+        if not row:
+            return
+        sql_norm = re.sub(r"\s+", "", (row["sql"] or "")).lower()
+        old_key = "unique(repo_id,commit_sha)"
+        new_key = "unique(repo_id,commit_sha,ai_model)"
+        if old_key not in sql_norm or new_key in sql_norm:
+            return  # already migrated or unrecognised schema
+
+        self._conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self._conn.execute("""
+                CREATE TABLE scans_new (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    repo_id          INTEGER NOT NULL REFERENCES repos(id),
+                    commit_sha       TEXT NOT NULL,
+                    commit_message   TEXT,
+                    commit_author    TEXT,
+                    commit_date      DATETIME,
+                    scan_started_at  DATETIME,
+                    scan_finished_at DATETIME,
+                    status           TEXT NOT NULL DEFAULT 'pending',
+                    scan_mode        TEXT,
+                    ai_model         TEXT,
+                    alert_count      INTEGER DEFAULT 0,
+                    note_count       INTEGER DEFAULT 0,
+                    tokens_used      INTEGER DEFAULT 0,
+                    error_message    TEXT,
+                    UNIQUE(repo_id, commit_sha, ai_model)
+                )
+            """)
+            self._conn.execute("INSERT INTO scans_new SELECT * FROM scans")
+            self._conn.execute("DROP TABLE scans")
+            self._conn.execute("ALTER TABLE scans_new RENAME TO scans")
+            self._conn.commit()
+        finally:
+            self._conn.execute("PRAGMA foreign_keys = ON")
 
     def close(self) -> None:
         if self._conn:
@@ -83,11 +133,18 @@ class SQLiteDB(Database):
 
     # ── Scans ──────────────────────────────────────────────────────────────────
 
-    def get_scan(self, repo_id: int, commit_sha: str) -> Optional[ScanRow]:
-        row = self._cx().execute(
-            "SELECT * FROM scans WHERE repo_id = ? AND commit_sha = ?",
-            (repo_id, commit_sha),
-        ).fetchone()
+    def get_scan(self, repo_id: int, commit_sha: str,
+                 ai_model: Optional[str] = None) -> Optional[ScanRow]:
+        if ai_model is not None:
+            row = self._cx().execute(
+                "SELECT * FROM scans WHERE repo_id = ? AND commit_sha = ? AND ai_model IS ?",
+                (repo_id, commit_sha, ai_model or None),
+            ).fetchone()
+        else:
+            row = self._cx().execute(
+                "SELECT * FROM scans WHERE repo_id = ? AND commit_sha = ? ORDER BY id DESC LIMIT 1",
+                (repo_id, commit_sha),
+            ).fetchone()
         return ScanRow(**row) if row else None
 
     def get_scan_by_id(self, scan_id: int) -> Optional[ScanRow]:
@@ -98,22 +155,24 @@ class SQLiteDB(Database):
 
     def create_scan(self, repo_id: int, commit_sha: str, commit_message: str,
                     commit_author: str, commit_date: Optional[datetime],
-                    scan_mode: str = "diff") -> int:
+                    scan_mode: str = "diff", ai_model: str = "") -> int:
         cx = self._cx()
+        model = ai_model or None
         cx.execute(
             """INSERT OR IGNORE INTO scans
-               (repo_id, commit_sha, commit_message, commit_author, commit_date, status, scan_mode)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (repo_id, commit_sha, commit_message, commit_author, commit_date,
+                status, scan_mode, ai_model)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (repo_id, commit_sha, commit_message, commit_author,
              commit_date.isoformat() if commit_date else None,
-             ScanStatus.PENDING, scan_mode),
+             ScanStatus.PENDING, scan_mode, model),
         )
         cx.commit()
-        # Always SELECT — INSERT OR IGNORE may silently skip on UNIQUE conflict,
-        # and cursor.lastrowid is unreliable (returns stale connection rowid) in that case.
+        # INSERT OR IGNORE silently skips on UNIQUE(repo_id, commit_sha, ai_model) conflict;
+        # SELECT with ai_model filter ensures we return the row for this model, not another.
         row = cx.execute(
-            "SELECT id FROM scans WHERE repo_id = ? AND commit_sha = ?",
-            (repo_id, commit_sha),
+            "SELECT id FROM scans WHERE repo_id = ? AND commit_sha = ? AND ai_model IS ?",
+            (repo_id, commit_sha, model),
         ).fetchone()
         return row["id"]
 
@@ -150,15 +209,20 @@ class SQLiteDB(Database):
         )
         cx.commit()
 
-    def list_scans(self, repo_id: Optional[int] = None) -> list[ScanRow]:
+    def list_scans(self, repo_id: Optional[int] = None,
+                   ai_model: Optional[str] = None) -> list[ScanRow]:
+        where: list[str] = []
+        params: list = []
         if repo_id:
-            rows = self._cx().execute(
-                "SELECT * FROM scans WHERE repo_id = ? ORDER BY id DESC", (repo_id,)
-            ).fetchall()
-        else:
-            rows = self._cx().execute(
-                "SELECT * FROM scans ORDER BY id DESC"
-            ).fetchall()
+            where.append("repo_id = ?")
+            params.append(repo_id)
+        if ai_model is not None:
+            where.append("ai_model IS ?")
+            params.append(ai_model or None)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = self._cx().execute(
+            f"SELECT * FROM scans {clause} ORDER BY id DESC", params
+        ).fetchall()
         return [ScanRow(**r) for r in rows]
 
     # ── Alerts ─────────────────────────────────────────────────────────────────
@@ -176,19 +240,21 @@ class SQLiteDB(Database):
         commit_sha: Optional[str] = None,
         commit_date=None,
         triggered_by: Optional[str] = None,
+        ai_model: Optional[str] = None,
     ) -> int:
         cx = self._cx()
         cur = cx.execute(
             """INSERT INTO alerts
                (scan_id, repo_id, commit_sha, commit_date,
-                file_path, line_start, line_end, alert_type, severity, agent_json, triggered_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                file_path, line_start, line_end, alert_type, severity,
+                agent_json, triggered_by, ai_model)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 scan_id, repo_id, commit_sha,
                 commit_date.isoformat() if commit_date else None,
                 file_path, line_start, line_end, alert_type, severity,
                 json.dumps(agent_json, ensure_ascii=False),
-                triggered_by,
+                triggered_by, ai_model or None,
             ),
         )
         cx.commit()
@@ -198,6 +264,25 @@ class SQLiteDB(Database):
         rows = self._cx().execute(
             "SELECT * FROM alerts WHERE scan_id = ? ORDER BY id", (scan_id,)
         ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["agent_json"] = json.loads(d["agent_json"] or "{}")
+            d["is_false_positive"] = bool(d["is_false_positive"])
+            result.append(AlertRow(**d))
+        return result
+
+    def list_alerts_for_repo(self, repo_id: int,
+                             ai_model: Optional[str] = None) -> list[AlertRow]:
+        if ai_model is not None:
+            rows = self._cx().execute(
+                "SELECT * FROM alerts WHERE repo_id = ? AND ai_model IS ? ORDER BY id",
+                (repo_id, ai_model or None),
+            ).fetchall()
+        else:
+            rows = self._cx().execute(
+                "SELECT * FROM alerts WHERE repo_id = ? ORDER BY id", (repo_id,)
+            ).fetchall()
         result = []
         for r in rows:
             d = dict(r)
