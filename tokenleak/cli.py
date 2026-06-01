@@ -16,7 +16,10 @@ from tokenleak.db.base import ScanStatus
 from tokenleak.logging_setup import setup_logging, get_logger
 from tokenleak.providers import resolve_targets
 from tokenleak.scanner import clone as clone_mod
-from tokenleak.scanner.walker import list_commits
+from tokenleak.scanner.walker import (
+    list_commits, get_head_sha, list_branch_tips,
+    checkout_detach, checkout_previous,
+)
 from tokenleak.animation import TokenCounter, set_enabled, simple_print
 from tokenleak.notifications.mattermost import Mattermost
 from tokenleak.report.markdown import generate as gen_report, write_report
@@ -206,10 +209,12 @@ def scan_repo(
         first_run = rescan or not done_shas
 
         if first_run:
-            # Phase 1: full scan of HEAD
+            # Phase 1: full scan of HEAD (default branch)
             head_commit = all_commits[0] if all_commits else None
             if head_commit:
-                console.print(f"[dim]Mode: full (HEAD) + diff (history) | Commits: {len(all_commits)}[/dim]")
+                branch_count = len(list_branch_tips(repo_path, exclude_shas={head_commit.sha})) if config.scan_all_branches else 0
+                mode_label = f"full (HEAD + {branch_count} branch tip(s)) + diff (history)" if branch_count else "full (HEAD) + diff (history)"
+                console.print(f"[dim]Mode: {mode_label} | Commits: {len(all_commits)}[/dim]")
                 scan_id = db.create_scan(
                     repo_id, head_commit.sha, head_commit.message,
                     head_commit.author, head_commit.date, scan_mode="full",
@@ -239,7 +244,49 @@ def scan_repo(
                     counter.stop()
                 _post_scan(db, scan_id, mm, url, config)
 
-            # Phase 2: diff scan all historical commits (skip HEAD, already full-scanned)
+            # Phase 1b: full scan of every other branch tip (if enabled)
+            if config.scan_all_branches:
+                branch_tips = list_branch_tips(repo_path, exclude_shas=done_shas)
+                for tip in branch_tips:
+                    log.info("Full scan of branch tip %s for %s", tip.sha[:8], url)
+                    scan_id = db.create_scan(
+                        repo_id, tip.sha, tip.message, tip.author, tip.date,
+                        scan_mode="full", ai_model=config.ai_model,
+                    )
+                    db.start_scan(scan_id)
+                    counter = TokenCounter(repo=url, model=config.ai_model)
+                    counter.set_commit(tip.sha)
+                    counter.start()
+                    checked_out = False
+                    try:
+                        checkout_detach(repo_path, tip.sha)
+                        checked_out = True
+                        run_full_scan(
+                            repo_path=repo_path, scan_id=scan_id, db=db, config=config,
+                            notifications=mm if mm.enabled else None,
+                            on_tokens=counter.add, on_status=counter.set_action,
+                            repo_id=repo_id, commit_sha=tip.sha,
+                            commit_date=tip.date, triggered_by=triggered_by,
+                        )
+                        db.finish_scan(scan_id, ScanStatus.DONE)
+                        done_shas.add(tip.sha)
+                    except InsufficientFundsError as exc:
+                        db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+                        raise
+                    except Exception as exc:
+                        log.error("Branch tip full scan error for %s@%s: %s",
+                                  url, tip.sha[:8], exc)
+                        db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+                    finally:
+                        counter.stop()
+                        if checked_out:
+                            try:
+                                checkout_previous(repo_path)
+                            except Exception as e:
+                                log.warning("Failed to restore HEAD after branch scan: %s", e)
+                    _post_scan(db, scan_id, mm, url, config)
+
+            # Phase 2: diff scan all historical commits (skip HEAD and branch tips, already full-scanned)
             history = all_commits[1:]
         else:
             # Subsequent run: diff scan only new commits (not in done_shas)

@@ -72,7 +72,8 @@ but will catch anything the regex/entropy patterns might miss.
 
 **`scan`** (first run for a repository):
 1. Full scan of the current HEAD (whole repo state)
-2. Diff scan of every historical commit in reverse (what was deleted or changed)
+2. Full scan of every other branch tip (one per unique remote branch, parallel to HEAD)
+3. Diff scan of every historical commit across all branches
 
 **`scan`** (subsequent runs — repo already has at least one `done` scan):
 - Diff scan of commits that are newer than the last scanned commit
@@ -84,6 +85,24 @@ Use after changing `agent.md`, switching AI models, or to re-verify from scratch
 **Skip logic is model-scoped.** The set of already-scanned commits (`done_shas`) is
 always filtered by the current `TOKENLEAK_AI_MODEL`. A second model therefore never
 inherits the first model's completed scans — it treats every commit as new.
+
+### Branch tip scanning
+
+By default (`TOKENLEAK_SCAN_ALL_BRANCHES=true`), TokenLeak runs a full two-pass scan on
+the tip of **every remote branch**, not just the default branch (HEAD). Each branch tip
+gets its own `scan` row (`scan_mode=full`). Already-scanned tips are skipped on
+subsequent runs.
+
+Disable if the repository has many branches and you want to limit AI spend:
+
+```bash
+TOKENLEAK_SCAN_ALL_BRANCHES=false
+```
+
+When disabled, non-HEAD branches are still covered by diff scans of all commits from
+`git log --all`, so any secret *introduced* in a commit is still found. The full scan
+of branch tips adds coverage for files that exist on those branches but haven't been
+modified in any tracked commit (rare in practice).
 
 ### Alert provenance
 

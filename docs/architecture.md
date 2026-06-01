@@ -88,8 +88,13 @@ The `__init__.py` dispatcher handles the target format:
 
 **walker.py** — Git history walk:
 - `git log --all` retrieves all commits across all branches
-- Per-commit: `git diff-tree` identifies changed files
+- Per-commit: `git diff-tree --root` identifies changed files; `--root` ensures root
+  commits (no parent) are treated as diffs from an empty tree so their files are included
 - `git show SHA:path` extracts file content at a specific commit
+- `list_branch_tips()` enumerates remote-tracking refs (`refs/remotes/*`) and returns one
+  `CommitInfo` per unique tip SHA, excluding already-done commits
+- `checkout_detach(sha)` / `checkout_previous()` temporarily switch the working tree
+  for branch-tip full scans; always wrapped in try/finally
 
 **extractor.py** — Content extraction:
 - Text files decoded as UTF-8 with error replacement
@@ -220,8 +225,10 @@ PostgreSQL uses `ALTER TABLE DROP CONSTRAINT / ADD CONSTRAINT`.
    c. git log → list all commits (skip merge commits)
    d. Determine scan strategy:
       - First run or rescan:
-          i.  Full scan of HEAD (Pass 1 + Pass 2 + OCR)
-          ii. Diff scan of every historical commit
+          i.   Full scan of HEAD (Pass 1 + Pass 2 + OCR)
+          ii.  Full scan of every other remote branch tip (Pass 1 + Pass 2 + OCR),
+               each with git checkout --detach / checkout - around the scan
+          iii. Diff scan of every historical commit across all branches
       - Subsequent scan:
           i.  Diff scan of commits newer than last successful scan only
    e. For each scan:

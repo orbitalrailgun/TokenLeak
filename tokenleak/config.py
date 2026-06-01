@@ -44,6 +44,7 @@ class Config:
 
     # Scanner
     prefilter_enabled: bool = field(default_factory=lambda: _bool("TOKENLEAK_PREFILTER_ENABLED", True))
+    scan_all_branches: bool = field(default_factory=lambda: _bool("TOKENLEAK_SCAN_ALL_BRANCHES", True))
     max_repo_size_mb: int = field(default_factory=lambda: _int("TOKENLEAK_MAX_REPO_SIZE_MB", 2048))
     max_file_size_mb: int = field(default_factory=lambda: _int("TOKENLEAK_MAX_FILE_SIZE_MB", 10))
     clone_timeout_sec: int = field(default_factory=lambda: _int("TOKENLEAK_CLONE_TIMEOUT_SEC", 300))

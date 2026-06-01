@@ -132,6 +132,7 @@ python -m tokenleak scan --noanimation
 | `TOKENLEAK_OCR_MODEL` | — | Vision-модель для OCR изображений и нотбуков (опционально) |
 | `TOKENLEAK_DB_TYPE` | `sqlite` | `sqlite` или `postgres` |
 | `TOKENLEAK_PREFILTER_ENABLED` | `true` | Отключить через `false` или `--no-prefilter` |
+| `TOKENLEAK_SCAN_ALL_BRANCHES` | `true` | Полный скан каждого удалённого бранча; отключить для экономии токенов |
 | `TOKENLEAK_MAX_REPO_SIZE_MB` | `2048` | Пропускать репозитории больше указанного размера |
 | `TOKENLEAK_REPOS_LIST_PATH` | `repos.txt` | Список целей для сканирования |
 | `TOKENLEAK_MATTERMOST_URL` | — | URL Mattermost-сервера |

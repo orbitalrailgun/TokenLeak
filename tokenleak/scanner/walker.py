@@ -71,10 +71,14 @@ def list_commits(repo_path: Path, skip_merges: bool = False) -> list[CommitInfo]
 
 
 def list_changed_files(repo_path: Path, sha: str) -> list[FileAtCommit]:
-    """Return files changed in this specific commit (diff vs parent)."""
+    """Return files changed in this specific commit (diff vs parent).
+
+    --root makes root commits (no parent) behave like a diff from an empty tree,
+    so all files they introduced are visible. For non-root commits it is a no-op.
+    """
     result = subprocess.run(
         ["git", "-C", str(repo_path), "diff-tree", "--no-commit-id", "-r",
-         "--name-status", "--diff-filter=ADM", sha],
+         "--root", "--name-status", "--diff-filter=ADM", sha],
         capture_output=True, text=True, timeout=60,
     )
     files = []
@@ -279,3 +283,83 @@ def get_commit_diff_additions(repo_path: Path, sha: str) -> DiffAdditions:
 
     # Drop files with no additions
     return {f: lines for f, lines in additions.items() if lines}
+
+
+# ── Branch utilities ──────────────────────────────────────────────────────────
+
+def get_head_sha(repo_path: Path) -> str:
+    """Return the full SHA of the current HEAD commit."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+        capture_output=True, text=True, timeout=10,
+    )
+    return result.stdout.strip()
+
+
+def list_branch_tips(repo_path: Path, exclude_shas: set[str]) -> list[CommitInfo]:
+    """Return one CommitInfo per unique remote-branch tip not in exclude_shas.
+
+    Uses refs/remotes/* so only remote-tracking branches are enumerated —
+    these are the branches that exist in the upstream repository. Local-only
+    refs created during the clone are ignored.
+    """
+    ref_result = subprocess.run(
+        ["git", "-C", str(repo_path), "for-each-ref",
+         "--format=%(objectname)", "refs/remotes/"],
+        capture_output=True, text=True, timeout=30,
+    )
+    unique_shas = [
+        sha for sha in (
+            line.strip() for line in ref_result.stdout.splitlines()
+        )
+        if sha and sha not in exclude_shas
+    ]
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique_shas = [s for s in unique_shas if not (s in seen or seen.add(s))]  # type: ignore[func-returns-value]
+
+    if not unique_shas:
+        return []
+
+    log_result = subprocess.run(
+        ["git", "-C", str(repo_path), "log", "--no-walk",
+         f"--format={_GIT_LOG_FORMAT}"] + unique_shas,
+        capture_output=True, text=True, timeout=60,
+    )
+    tips: list[CommitInfo] = []
+    seen_log: set[str] = set()
+    for line in log_result.stdout.splitlines():
+        parts = line.split("\x1f", 4)
+        if len(parts) < 4:
+            continue
+        sha = parts[0].strip()
+        if sha in seen_log or sha in exclude_shas:
+            continue
+        seen_log.add(sha)
+        try:
+            dt = datetime.fromisoformat(parts[2].strip())
+        except ValueError:
+            dt = None
+        tips.append(CommitInfo(
+            sha=sha,
+            author=parts[1].strip(),
+            date=dt,
+            message=parts[3].strip(),
+        ))
+    return tips
+
+
+def checkout_detach(repo_path: Path, sha: str) -> None:
+    """Check out sha in detached-HEAD mode (no branch switch, just moves HEAD)."""
+    subprocess.run(
+        ["git", "-C", str(repo_path), "checkout", "--detach", "--quiet", sha],
+        check=True, capture_output=True, timeout=60,
+    )
+
+
+def checkout_previous(repo_path: Path) -> None:
+    """Return to the branch that was active before the last checkout (git checkout -)."""
+    subprocess.run(
+        ["git", "-C", str(repo_path), "checkout", "--quiet", "-"],
+        check=True, capture_output=True, timeout=60,
+    )

@@ -132,6 +132,7 @@ All settings via environment variables or a `.env` file. Copy `.env.example` to 
 | `TOKENLEAK_OCR_MODEL` | — | Vision model for image/notebook OCR (optional) |
 | `TOKENLEAK_DB_TYPE` | `sqlite` | `sqlite` or `postgres` |
 | `TOKENLEAK_PREFILTER_ENABLED` | `true` | Disable with `false` or `--no-prefilter` |
+| `TOKENLEAK_SCAN_ALL_BRANCHES` | `true` | Full-scan every remote branch tip; disable to limit AI spend |
 | `TOKENLEAK_MAX_REPO_SIZE_MB` | `2048` | Skip repos larger than this |
 | `TOKENLEAK_REPOS_LIST_PATH` | `repos.txt` | Input target list |
 | `TOKENLEAK_MATTERMOST_URL` | — | Mattermost server URL |
