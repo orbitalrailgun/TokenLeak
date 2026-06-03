@@ -212,9 +212,11 @@ pytest tests/ -v
 | Document | Contents |
 |----------|---------|
 | [docs/architecture.md](docs/architecture.md) | Component diagram and data flow |
+| [docs/flow.md](docs/flow.md) | End-to-end scan flow: command dispatch, strategy, pre-filter, agent/MCP interaction |
 | [docs/workflow.md](docs/workflow.md) | Commands, target formats, flags reference |
 | [docs/model_comparison.md](docs/model_comparison.md) | Multi-model comparison in a single database |
 | [docs/postgresql_setup.md](docs/postgresql_setup.md) | PostgreSQL setup with security hardening |
+| [docs/prefilter.md](docs/prefilter.md) | Pre-filter internals: exclusion, regex patterns, entropy, placeholder suppression |
 | [docs/mattermost_setup.md](docs/mattermost_setup.md) | Mattermost integration: bot setup, channel ID, notification examples |
 | [docs/deployment.md](docs/deployment.md) | Production deployment step-by-step |
 | [docs/cron_setup.md](docs/cron_setup.md) | Cron and systemd timer configuration |

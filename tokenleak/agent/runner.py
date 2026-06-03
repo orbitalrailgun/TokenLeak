@@ -54,10 +54,9 @@ likely secrets by local entropy and regex analysis). Your task:
    password, PII, or corporate-sensitive value — call save_alert().
 2. If you need surrounding context, use read_file() to read the full file.
 3. Ignore placeholder values like "CHANGE_ME", "your-key-here", "example.com".
-4. When finished, call send_mattermost() ONCE with a brief summary of all findings
-   (if configured), then reply with a plain-text summary and stop (no more tool calls).
-   NOTE: do NOT call send_mattermost() instead of save_alert() — Mattermost
-   notifications for individual alerts are sent automatically when you call save_alert().
+4. When finished, reply with a plain-text summary and stop (no more tool calls).
+   Do NOT call send_mattermost() — per-alert notifications are sent automatically
+   when you call save_alert(), and the overall repo summary is sent separately.
 
 For each save_alert() call provide:
   - file_path, line_start, line_end

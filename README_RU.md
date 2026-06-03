@@ -232,9 +232,11 @@ pytest tests/ -v
 | Файл | Содержание |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Архитектура компонентов и поток данных |
+| [docs/flow.md](docs/flow.md) | Полный поток выполнения: диспетчер команд, стратегия, префильтр, взаимодействие агента и MCP |
 | [docs/workflow.md](docs/workflow.md) | Команды, форматы целей, флаги |
 | [docs/model_comparison.md](docs/model_comparison.md) | Сравнение нескольких моделей в единой БД |
 | [docs/postgresql_setup.md](docs/postgresql_setup.md) | Настройка PostgreSQL с hardening |
+| [docs/prefilter.md](docs/prefilter.md) | Префильтр: исключения, regex-паттерны, энтропия, подавление плейсхолдеров |
 | [docs/mattermost_setup.md](docs/mattermost_setup.md) | Интеграция с Mattermost: бот, channel ID, примеры уведомлений |
 | [docs/deployment.md](docs/deployment.md) | Пошаговое развёртывание в production |
 | [docs/cron_setup.md](docs/cron_setup.md) | Конфигурация cron и systemd timer |
