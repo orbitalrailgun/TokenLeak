@@ -18,6 +18,7 @@ In both modes the agent loop runs until:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -53,8 +54,10 @@ likely secrets by local entropy and regex analysis). Your task:
    password, PII, or corporate-sensitive value — call save_alert().
 2. If you need surrounding context, use read_file() to read the full file.
 3. Ignore placeholder values like "CHANGE_ME", "your-key-here", "example.com".
-4. When finished, call send_mattermost() with a brief summary (if configured),
-   then reply with a plain-text summary and stop (no more tool calls).
+4. When finished, call send_mattermost() ONCE with a brief summary of all findings
+   (if configured), then reply with a plain-text summary and stop (no more tool calls).
+   NOTE: do NOT call send_mattermost() instead of save_alert() — Mattermost
+   notifications for individual alerts are sent automatically when you call save_alert().
 
 For each save_alert() call provide:
   - file_path, line_start, line_end
@@ -105,8 +108,10 @@ Efficiency rules — IMPORTANT:
   - Do not call get_commit_log() or get_file_tree() — that info is already in your notes.
   - Once you have checked all high-risk files, stop and give your summary.
 
-When done, call send_mattermost() with a brief summary (if configured),
-then reply with a plain-text summary and stop.
+When done, call send_mattermost() ONCE with a brief summary of all findings
+(if configured), then reply with a plain-text summary and stop.
+NOTE: do NOT call send_mattermost() instead of save_alert() — Mattermost
+notifications for individual alerts are sent automatically when you call save_alert().
 """
 
 _DEFAULT_SYSTEM = (
@@ -208,7 +213,27 @@ def _agent_loop(
             break
 
         for tc in msg.tool_calls:
-            args = json.loads(tc.function.arguments)
+            raw = tc.function.arguments
+            try:
+                args = json.loads(raw)
+            except json.JSONDecodeError:
+                # Model occasionally emits invalid JSON escape sequences (e.g. \p, \e).
+                # Valid JSON escapes: " \ / b f n r t uXXXX — replace everything else.
+                try:
+                    repaired = re.sub(r'\\(?!["\\/bfnrtu]|u[0-9a-fA-F]{4})', r'\\\\', raw)
+                    args = json.loads(repaired)
+                    log.warning(
+                        "Repaired invalid JSON escape in %s arguments", tc.function.name
+                    )
+                except json.JSONDecodeError as exc:
+                    log.error(
+                        "Failed to parse tool arguments for %s: %s", tc.function.name, exc
+                    )
+                    messages.append({
+                        "role": "tool", "tool_call_id": tc.id,
+                        "content": f"Tool error: invalid JSON in arguments: {exc}",
+                    })
+                    continue
             log.debug("Tool call: %s(%s)", tc.function.name, list(args.keys()))
             if on_status:
                 on_status(_tool_status(tc.function.name, args))

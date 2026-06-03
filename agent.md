@@ -57,6 +57,12 @@ corporate-sensitive information — across the full history of the repository.
 - Values in unit test fixtures that are clearly not real credentials
 - Public documentation examples in README or docs
 - Already-revoked tokens (note them as low severity informational only)
+- Infrastructure resource identifiers in Terraform/OpenTofu provider documentation:
+  `flavor_id`, `zone_id`, `ip_id`, `project_id`, `public_key_id`, `sds_disks_ids`,
+  `service_account_id`, and similar resource reference fields. UUIDs used as resource
+  IDs in documentation examples are NOT credentials — skip them entirely.
+  Exception: a UUID in a field named `password` or `secret` may be worth noting at
+  low/medium severity if the file is not clearly a documentation example.
 
 ## Analysis approach
 
@@ -73,7 +79,12 @@ corporate-sensitive information — across the full history of the repository.
 - Check git history for deleted sensitive files using `read_file_at_commit()`
 - Use `search_content()` to find patterns across the repo (e.g., "password =", "api_key")
 - For each confirmed finding, call `save_alert()` with full details
-- When done, call `send_mattermost()` with a summary (if Mattermost is available)
+- When done, call `send_mattermost()` ONCE with an overall scan summary (if Mattermost is available)
+
+**Important:** `save_alert()` automatically sends a Mattermost notification for each
+finding. Do NOT call `send_mattermost()` for individual alerts or as a substitute
+for `save_alert()`. Only call `send_mattermost()` once at the very end with a
+summary of everything found (or "no findings").
 
 ## Severity levels
 

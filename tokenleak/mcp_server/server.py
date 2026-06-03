@@ -153,6 +153,16 @@ def save_alert(
         ai_model=_ai_model or None,
     )
     log.info("[ALERT #%d] %s severity=%s file=%s", alert_id, alert_type, severity, file_path)
+    if _notifications is not None:
+        try:
+            sev_icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}.get(severity, "⚪")
+            line_info = f" line {line_start}" if line_start else ""
+            _notifications.send(
+                f"{sev_icon} **{severity.upper()} [{alert_type}]** "
+                f"`{file_path}`{line_info}\n{description}"
+            )
+        except Exception as exc:
+            log.warning("Mattermost auto-notify failed for alert #%d: %s", alert_id, exc)
     return f"Alert #{alert_id} saved."
 
 
@@ -277,7 +287,11 @@ def get_file_tree() -> str:
 
 @mcp.tool()
 def send_mattermost(message: str, channel: str = "") -> str:
-    """Send a message to Mattermost.
+    """Send a final scan summary to Mattermost.
+
+    Call this ONCE after all save_alert() calls are done, with a brief summary
+    of everything found (or nothing found). Do NOT call this for individual
+    findings — alert notifications are sent automatically by save_alert().
 
     Args:
         message: Markdown message to send.
@@ -479,7 +493,11 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "send_mattermost",
-            "description": "Send a message to Mattermost",
+            "description": (
+                "Send a final scan summary to Mattermost. "
+                "Call ONCE after all save_alert() calls, never for individual findings — "
+                "alert notifications are sent automatically by save_alert()."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
