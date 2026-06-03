@@ -215,6 +215,7 @@ pytest tests/ -v
 | [docs/workflow.md](docs/workflow.md) | Commands, target formats, flags reference |
 | [docs/model_comparison.md](docs/model_comparison.md) | Multi-model comparison in a single database |
 | [docs/postgresql_setup.md](docs/postgresql_setup.md) | PostgreSQL setup with security hardening |
+| [docs/mattermost_setup.md](docs/mattermost_setup.md) | Mattermost integration: bot setup, channel ID, notification examples |
 | [docs/deployment.md](docs/deployment.md) | Production deployment step-by-step |
 | [docs/cron_setup.md](docs/cron_setup.md) | Cron and systemd timer configuration |
 | [agent.md](agent.md) | AI agent instructions (can be customised) |
