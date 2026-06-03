@@ -58,8 +58,8 @@ class TokenCounter:
             self._mode = mode
             self._data_size = data_size
             self._action = ""
-        # In noanimation mode print a brief commit line for progress feedback
-        if not _ENABLED and sha:
+        # In noanimation mode (explicit --noanimation in a real terminal) print a brief commit line
+        if not _ENABLED and _console.is_terminal and sha:
             sha_short = sha[:12]
             parts: list[str] = [sha_short]
             if branch:
@@ -144,7 +144,7 @@ class TokenCounter:
 
     def start(self) -> None:
         self._started = True
-        if not _ENABLED:
+        if not _ENABLED or not _console.is_terminal:
             return
         self._running = True
         self._thread = threading.Thread(target=self._animate, daemon=True)

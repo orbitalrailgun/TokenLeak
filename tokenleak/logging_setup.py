@@ -2,10 +2,25 @@
 
 import logging
 import logging.handlers
-import sys
 from typing import Optional
 
 LOGGER_NAME = "tokenleak"
+
+
+class _ConsoleHandler(logging.Handler):
+    """Writes log records through Rich's animation console.
+
+    Using _console.print() instead of sys.stderr.write() lets Rich coordinate
+    the log output with any active Live display — preventing the animation block
+    from being displaced by log messages written outside Rich's context.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        from tokenleak.animation import _console
+        try:
+            _console.print(self.format(record), markup=False, highlight=False, soft_wrap=True)
+        except Exception:
+            self.handleError(record)
 
 
 def setup_logging(
@@ -25,7 +40,7 @@ def setup_logging(
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
-    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler = _ConsoleHandler()
     stderr_handler.setLevel(logging.INFO)
     stderr_handler.setFormatter(fmt)
     logger.addHandler(stderr_handler)
@@ -52,7 +67,6 @@ def setup_logging(
                     facility=logging.handlers.SysLogHandler.LOG_DAEMON,
                 )
             else:
-                # Local syslog socket
                 import platform
                 socket_path = "/dev/log" if platform.system() == "Linux" else "/var/run/syslog"
                 syslog_handler = logging.handlers.SysLogHandler(
