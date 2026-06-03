@@ -19,6 +19,7 @@ from tokenleak.scanner import clone as clone_mod
 from tokenleak.scanner.walker import (
     list_commits, get_head_sha, list_branch_tips,
     checkout_detach, checkout_previous,
+    get_head_branch, get_head_file_count, get_diff_added_lines,
 )
 from tokenleak.animation import TokenCounter, set_enabled, simple_print
 from tokenleak.notifications.mattermost import Mattermost
@@ -106,15 +107,16 @@ def scan_repo(
     provider = _guess_provider(url)
     repo_id = db.upsert_repo(url, provider, name=url.rstrip("/").split("/")[-1].removesuffix(".git"))
     repo_path: Optional[Path] = None
+    counter = TokenCounter(model=config.ai_model)
 
     try:
-        repo_path = clone_mod.clone(url, config)
-    except RuntimeError as exc:
-        log.error("Clone failed for %s: %s", url, exc)
-        console.print(f"[red]Clone failed:[/red] {url}\n{exc}")
-        return
+        try:
+            repo_path = clone_mod.clone(url, config)
+        except RuntimeError as exc:
+            log.error("Clone failed for %s: %s", url, exc)
+            console.print(f"[red]Clone failed:[/red] {url}\n{exc}")
+            return
 
-    try:
         size_mb = clone_mod.repo_size_mb(repo_path)
         if size_mb > config.max_repo_size_mb:
             msg = f"Skipping {url} — size {size_mb:.0f} MB > limit {config.max_repo_size_mb} MB"
@@ -125,6 +127,9 @@ def scan_repo(
 
         # All commits in the repo, newest first, no merge commits
         all_commits = list_commits(repo_path, skip_merges=True)
+
+        # Start the single animation for this entire repo scan
+        counter.start()
 
         # ── --sha filter: single-commit mode ──────────────────────────────────
         if sha_filter:
@@ -141,9 +146,16 @@ def scan_repo(
                     scan_mode="full", ai_model=config.ai_model,
                 )
                 db.start_scan(scan_id)
-                counter = TokenCounter(repo=url, model=config.ai_model)
-                counter.set_commit(target.sha)
-                counter.start()
+                head_branch = get_head_branch(repo_path)
+                file_count = get_head_file_count(repo_path)
+                counter.set_commit(
+                    target.sha,
+                    branch=head_branch,
+                    author=target.author,
+                    date=target.date,
+                    mode="full",
+                    data_size=f"{file_count} files",
+                )
                 try:
                     run_full_scan(
                         repo_path=repo_path, scan_id=scan_id, db=db, config=config,
@@ -159,8 +171,6 @@ def scan_repo(
                 except Exception as exc:
                     log.error("Scan error for %s@%s: %s", url, target.sha[:8], exc)
                     db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
-                finally:
-                    counter.stop()
             else:
                 # scan --sha: diff scan that one commit
                 console.print(f"[dim]Mode: diff (scan --sha) | Commit: {target.sha[:8]}[/dim]")
@@ -169,9 +179,14 @@ def scan_repo(
                     scan_mode="diff", ai_model=config.ai_model,
                 )
                 db.start_scan(scan_id)
-                counter = TokenCounter(repo=url, model=config.ai_model)
-                counter.set_commit(target.sha)
-                counter.start()
+                added_lines = get_diff_added_lines(repo_path, target.sha)
+                counter.set_commit(
+                    target.sha,
+                    author=target.author,
+                    date=target.date,
+                    mode="diff",
+                    data_size=f"{added_lines:,} lines",
+                )
                 try:
                     run_diff_scan(
                         repo_path=repo_path, scan_id=scan_id,
@@ -189,8 +204,6 @@ def scan_repo(
                 except Exception as exc:
                     log.error("Scan error for %s@%s: %s", url, target.sha[:8], exc)
                     db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
-                finally:
-                    counter.stop()
             _post_scan(db, scan_id, mm, url, config)
             return
 
@@ -209,7 +222,7 @@ def scan_repo(
         first_run = rescan or not done_shas
 
         if first_run:
-            # Phase 1: full scan of HEAD (default branch)
+            # Phase 1a: full scan of HEAD (default branch)
             head_commit = all_commits[0] if all_commits else None
             if head_commit:
                 branch_count = len(list_branch_tips(repo_path, exclude_shas={head_commit.sha})) if config.scan_all_branches else 0
@@ -221,9 +234,16 @@ def scan_repo(
                     ai_model=config.ai_model,
                 )
                 db.start_scan(scan_id)
-                counter = TokenCounter(repo=url, model=config.ai_model)
-                counter.set_commit(head_commit.sha)
-                counter.start()
+                head_branch = get_head_branch(repo_path)
+                file_count = get_head_file_count(repo_path)
+                counter.set_commit(
+                    head_commit.sha,
+                    branch=head_branch,
+                    author=head_commit.author,
+                    date=head_commit.date,
+                    mode="full",
+                    data_size=f"{file_count} files",
+                )
                 try:
                     run_full_scan(
                         repo_path=repo_path, scan_id=scan_id, db=db, config=config,
@@ -240,8 +260,6 @@ def scan_repo(
                 except Exception as exc:
                     log.error("Full scan error for %s: %s", url, exc)
                     db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
-                finally:
-                    counter.stop()
                 _post_scan(db, scan_id, mm, url, config)
 
             # Phase 1b: full scan of every other branch tip (if enabled)
@@ -254,13 +272,19 @@ def scan_repo(
                         scan_mode="full", ai_model=config.ai_model,
                     )
                     db.start_scan(scan_id)
-                    counter = TokenCounter(repo=url, model=config.ai_model)
-                    counter.set_commit(tip.sha)
-                    counter.start()
                     checked_out = False
                     try:
                         checkout_detach(repo_path, tip.sha)
                         checked_out = True
+                        tip_file_count = get_head_file_count(repo_path)
+                        counter.set_commit(
+                            tip.sha,
+                            branch=tip.branch,
+                            author=tip.author,
+                            date=tip.date,
+                            mode="full",
+                            data_size=f"{tip_file_count} files",
+                        )
                         run_full_scan(
                             repo_path=repo_path, scan_id=scan_id, db=db, config=config,
                             notifications=mm if mm.enabled else None,
@@ -278,7 +302,6 @@ def scan_repo(
                                   url, tip.sha[:8], exc)
                         db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
                     finally:
-                        counter.stop()
                         if checked_out:
                             try:
                                 checkout_previous(repo_path)
@@ -303,9 +326,14 @@ def scan_repo(
                 scan_mode="diff", ai_model=config.ai_model,
             )
             db.start_scan(scan_id)
-            counter = TokenCounter(repo=url, model=config.ai_model)
-            counter.set_commit(commit.sha)
-            counter.start()
+            added_lines = get_diff_added_lines(repo_path, commit.sha)
+            counter.set_commit(
+                commit.sha,
+                author=commit.author,
+                date=commit.date,
+                mode="diff",
+                data_size=f"{added_lines:,} lines",
+            )
             try:
                 run_diff_scan(
                     repo_path=repo_path, scan_id=scan_id,
@@ -324,11 +352,10 @@ def scan_repo(
             except Exception as exc:
                 log.error("Scan error for %s@%s: %s", url, commit.sha[:8], exc)
                 db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
-            finally:
-                counter.stop()
             _post_scan(db, scan_id, mm, url, config)
 
     finally:
+        counter.stop()
         if repo_path:
             clone_mod.remove(repo_path)
 
@@ -373,7 +400,7 @@ def cmd_scan(
 
     from tokenleak.agent.client import InsufficientFundsError
 
-    console.print(f"[bold]TokenLeak v{__version__}[/bold] — scanning {len(urls)} repo(s)")
+    console.print(f"[bold]TokenLeak v{__version__}[/bold] — scanning {len(urls)} repo(s)  🤖 {config.ai_model}")
     for url in urls:
         console.rule(f"[cyan]{url}[/cyan]")
         try:

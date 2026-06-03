@@ -28,6 +28,7 @@ class CommitInfo:
     date: Optional[datetime]
     message: str
     is_merge: bool = False
+    branch: str = ""
 
 
 @dataclass
@@ -296,6 +297,40 @@ def get_head_sha(repo_path: Path) -> str:
     return result.stdout.strip()
 
 
+def get_head_branch(repo_path: Path) -> str:
+    """Return current branch name, or empty string when HEAD is detached."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True, timeout=10,
+    )
+    branch = result.stdout.strip()
+    return "" if branch == "HEAD" else branch
+
+
+def get_head_file_count(repo_path: Path) -> int:
+    """Count tracked files in the current HEAD."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "ls-tree", "-r", "--name-only", "HEAD"],
+        capture_output=True, text=True, timeout=30,
+    )
+    return sum(1 for line in result.stdout.splitlines() if line.strip())
+
+
+def get_diff_added_lines(repo_path: Path, sha: str) -> int:
+    """Count total lines added by this commit (binary files excluded)."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "diff-tree",
+         "--no-commit-id", "-r", "--numstat", sha],
+        capture_output=True, text=True, timeout=30,
+    )
+    total = 0
+    for line in result.stdout.splitlines():
+        parts = line.split("\t", 2)
+        if parts and parts[0].isdigit():
+            total += int(parts[0])
+    return total
+
+
 def list_branch_tips(repo_path: Path, exclude_shas: set[str]) -> list[CommitInfo]:
     """Return one CommitInfo per unique remote-branch tip not in exclude_shas.
 
@@ -305,18 +340,28 @@ def list_branch_tips(repo_path: Path, exclude_shas: set[str]) -> list[CommitInfo
     """
     ref_result = subprocess.run(
         ["git", "-C", str(repo_path), "for-each-ref",
-         "--format=%(objectname)", "refs/remotes/"],
+         "--format=%(objectname)\t%(refname:short)", "refs/remotes/"],
         capture_output=True, text=True, timeout=30,
     )
-    unique_shas = [
-        sha for sha in (
-            line.strip() for line in ref_result.stdout.splitlines()
-        )
-        if sha and sha not in exclude_shas
-    ]
-    # Deduplicate while preserving order
+
+    sha_to_branch: dict[str, str] = {}
+    unique_shas: list[str] = []
     seen: set[str] = set()
-    unique_shas = [s for s in unique_shas if not (s in seen or seen.add(s))]  # type: ignore[func-returns-value]
+    for line in ref_result.stdout.splitlines():
+        parts = line.strip().split("\t", 1)
+        sha = parts[0].strip()
+        ref = parts[1].strip() if len(parts) > 1 else ""
+        # Strip remote prefix (e.g. "origin/main" → "main"); skip HEAD symrefs
+        if "/" in ref:
+            branch_name = ref.split("/", 1)[1]
+        else:
+            branch_name = ref
+        if branch_name == "HEAD":
+            continue
+        if sha and sha not in exclude_shas and sha not in seen:
+            unique_shas.append(sha)
+            seen.add(sha)
+            sha_to_branch[sha] = branch_name
 
     if not unique_shas:
         return []
@@ -345,6 +390,7 @@ def list_branch_tips(repo_path: Path, exclude_shas: set[str]) -> list[CommitInfo
             author=parts[1].strip(),
             date=dt,
             message=parts[3].strip(),
+            branch=sha_to_branch.get(sha, ""),
         ))
     return tips
 
