@@ -41,7 +41,7 @@ def setup_logging(
     )
 
     stderr_handler = _ConsoleHandler()
-    stderr_handler.setLevel(logging.INFO)
+    stderr_handler.setLevel(logging.WARNING)
     stderr_handler.setFormatter(fmt)
     logger.addHandler(stderr_handler)
 
