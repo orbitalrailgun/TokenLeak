@@ -224,6 +224,12 @@ def scan_repo(
         first_run = rescan or not done_shas
 
         if first_run:
+            # Pre-compute history so we know the total commit count up front
+            history = all_commits[1:]
+            _ctotal = 1 + len(history)   # HEAD full scan + all history diffs
+            _coffset = 1                  # history loop starts after HEAD scan
+            counter.set_commit_progress(0, _ctotal)
+
             # Phase 1a: full scan of HEAD (default branch)
             head_commit = all_commits[0] if all_commits else None
             if head_commit:
@@ -263,6 +269,7 @@ def scan_repo(
                 except Exception as exc:
                     log.error("Full scan error for %s: %s", url, exc)
                     db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+                counter.set_commit_progress(1, _ctotal)
                 _post_scan(db, scan_id, mm, url, config)
 
             # Phase 1b: full scan of every other branch tip (if enabled)
@@ -314,16 +321,18 @@ def scan_repo(
                     _post_scan(db, scan_id, mm, url, config)
 
             # Phase 2: diff scan all historical commits (skip HEAD and branch tips, already full-scanned)
-            history = all_commits[1:]
+            # history was pre-computed above
         else:
             # Subsequent run: diff scan only new commits (not in done_shas)
             history = [c for c in all_commits if c.sha not in done_shas]
+            _ctotal = len(history)
+            _coffset = 0
             console.print(f"[dim]Mode: diff (incremental) | New commits: {len(history)}[/dim]")
+            if _ctotal > 0:
+                counter.set_commit_progress(0, _ctotal)
 
         history_total = len(history)
         history_done = 0
-        if history_total > 0:
-            counter.set_commit_progress(0, history_total)
         for commit in history:
             if commit.sha in done_shas:
                 log.info("Skipping already-scanned commit %s in %s", commit.sha[:8], url)
@@ -362,7 +371,7 @@ def scan_repo(
                 log.error("Scan error for %s@%s: %s", url, commit.sha[:8], exc)
                 db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
             history_done += 1
-            counter.set_commit_progress(history_done, history_total)
+            counter.set_commit_progress(_coffset + history_done, _ctotal)
             _post_scan(db, scan_id, mm, url, config)
 
     finally:
