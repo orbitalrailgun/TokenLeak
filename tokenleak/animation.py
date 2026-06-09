@@ -14,6 +14,13 @@ _ENABLED = True
 _console = Console(stderr=True)
 
 
+def _progress_bar(current: int, total: int, width: int = 20) -> tuple[str, str]:
+    if total <= 0:
+        return "░" * width, "–"
+    filled = min(width, round(current * width / total))
+    return "█" * filled + "░" * (width - filled), f"{current}/{total}"
+
+
 def set_enabled(enabled: bool) -> None:
     global _ENABLED
     _ENABLED = enabled
@@ -37,6 +44,10 @@ class TokenCounter:
         self._mode: str = ""
         self._data_size: str = ""
         self._action: str = ""
+        self._commit_cur: int = 0
+        self._commit_total: int = 0
+        self._file_cur: int = 0
+        self._file_total: int = 0
 
     # ── State setters (thread-safe) ───────────────────────────────────────────
 
@@ -77,6 +88,16 @@ class TokenCounter:
     def set_action(self, msg: str) -> None:
         with self._lock:
             self._action = msg[:80] if msg else ""
+
+    def set_commit_progress(self, current: int, total: int) -> None:
+        with self._lock:
+            self._commit_cur = current
+            self._commit_total = total
+
+    def set_file_progress(self, current: int, total: int) -> None:
+        with self._lock:
+            self._file_cur = current
+            self._file_total = total
 
     @property
     def total(self) -> int:
@@ -122,6 +143,22 @@ class TokenCounter:
             t.append(data_size + "\n", style="dim")
 
         t.append("\n")
+
+        commit_total = self._commit_total
+        file_total = self._file_total
+        if commit_total > 0:
+            bar, frac = _progress_bar(self._commit_cur, commit_total)
+            t.append("  commits ", style="dim")
+            t.append(f"[{bar}]", style="bold green")
+            t.append(f"  {frac}\n", style="dim")
+        if file_total > 0:
+            bar, frac = _progress_bar(self._file_cur, file_total)
+            t.append("  files   ", style="dim")
+            t.append(f"[{bar}]", style="bold cyan")
+            t.append(f"  {frac}\n", style="dim")
+        if commit_total > 0 or file_total > 0:
+            t.append("\n")
+
         if action:
             t.append(f"  ⚙  {action}\n", style="dim cyan")
             t.append("\n")

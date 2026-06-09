@@ -161,6 +161,7 @@ def scan_repo(
                         repo_path=repo_path, scan_id=scan_id, db=db, config=config,
                         notifications=mm if mm.enabled else None,
                         on_tokens=counter.add, on_status=counter.set_action,
+                        on_file_progress=counter.set_file_progress,
                         repo_id=repo_id, commit_sha=target.sha, commit_date=target.date,
                         triggered_by=triggered_by,
                     )
@@ -194,6 +195,7 @@ def scan_repo(
                         commit_message=target.message, db=db, config=config,
                         notifications=mm if mm.enabled else None,
                         on_tokens=counter.add, on_status=counter.set_action,
+                        on_file_progress=counter.set_file_progress,
                         repo_id=repo_id, commit_date=target.date,
                         triggered_by=triggered_by,
                     )
@@ -249,6 +251,7 @@ def scan_repo(
                         repo_path=repo_path, scan_id=scan_id, db=db, config=config,
                         notifications=mm if mm.enabled else None,
                         on_tokens=counter.add, on_status=counter.set_action,
+                        on_file_progress=counter.set_file_progress,
                         repo_id=repo_id, commit_sha=head_commit.sha,
                         commit_date=head_commit.date, triggered_by=triggered_by,
                     )
@@ -289,6 +292,7 @@ def scan_repo(
                             repo_path=repo_path, scan_id=scan_id, db=db, config=config,
                             notifications=mm if mm.enabled else None,
                             on_tokens=counter.add, on_status=counter.set_action,
+                            on_file_progress=counter.set_file_progress,
                             repo_id=repo_id, commit_sha=tip.sha,
                             commit_date=tip.date, triggered_by=triggered_by,
                         )
@@ -316,6 +320,10 @@ def scan_repo(
             history = [c for c in all_commits if c.sha not in done_shas]
             console.print(f"[dim]Mode: diff (incremental) | New commits: {len(history)}[/dim]")
 
+        history_total = len(history)
+        history_done = 0
+        if history_total > 0:
+            counter.set_commit_progress(0, history_total)
         for commit in history:
             if commit.sha in done_shas:
                 log.info("Skipping already-scanned commit %s in %s", commit.sha[:8], url)
@@ -341,6 +349,7 @@ def scan_repo(
                     commit_message=commit.message, db=db, config=config,
                     notifications=mm if mm.enabled else None,
                     on_tokens=counter.add, on_status=counter.set_action,
+                    on_file_progress=counter.set_file_progress,
                     repo_id=repo_id, commit_date=commit.date,
                     triggered_by=triggered_by,
                 )
@@ -352,6 +361,8 @@ def scan_repo(
             except Exception as exc:
                 log.error("Scan error for %s@%s: %s", url, commit.sha[:8], exc)
                 db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
+            history_done += 1
+            counter.set_commit_progress(history_done, history_total)
             _post_scan(db, scan_id, mm, url, config)
 
     finally:

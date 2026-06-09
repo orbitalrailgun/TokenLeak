@@ -501,17 +501,28 @@ def _format_diff_for_agent(
     return "\n".join(parts)
 
 
-def _prefilter_diff(additions: DiffAdditions, prefilter_enabled: bool) -> DiffAdditions:
+def _prefilter_diff(
+    additions: DiffAdditions,
+    prefilter_enabled: bool,
+    on_file_progress: Optional[Callable[[int, int], None]] = None,
+) -> DiffAdditions:
     """Return only the files/lines that pass the pre-filter."""
+    total = len(additions)
     if not prefilter_enabled:
+        if on_file_progress:
+            on_file_progress(total, total)
         return additions
 
     candidates: DiffAdditions = {}
-    for file_path, lines in additions.items():
+    for i, (file_path, lines) in enumerate(additions.items()):
+        if on_file_progress:
+            on_file_progress(i, total)
         synthetic_content = "\n".join(line for _, line in lines)
         result = filter_file(Path(file_path), synthetic_content)
         if should_send_to_ai(result, enabled=True):
             candidates[file_path] = lines
+    if on_file_progress:
+        on_file_progress(total, total)
     return candidates
 
 
@@ -528,6 +539,7 @@ def run_diff_scan(
     notifications=None,
     on_tokens: Optional[Callable[[int], None]] = None,
     on_status: Optional[Callable[[str], None]] = None,
+    on_file_progress: Optional[Callable[[int, int], None]] = None,
     repo_id: Optional[int] = None,
     commit_date=None,
     triggered_by: Optional[str] = None,
@@ -564,9 +576,11 @@ def run_diff_scan(
             on_status("⏭  empty diff — skipped")
         return 0
 
+    if on_file_progress:
+        on_file_progress(0, len(additions))
     if on_status:
         on_status(f"🔎 prefiltering {len(additions)} file(s)…")
-    candidates = _prefilter_diff(additions, config.prefilter_enabled)
+    candidates = _prefilter_diff(additions, config.prefilter_enabled, on_file_progress)
     if not candidates:
         log.info(
             "[scan %d] Pre-filter: no candidates in %s (%d file(s) checked)",
@@ -617,6 +631,7 @@ def run_full_scan(
     notifications=None,
     on_tokens: Optional[Callable[[int], None]] = None,
     on_status: Optional[Callable[[str], None]] = None,
+    on_file_progress: Optional[Callable[[int, int], None]] = None,
     repo_id: Optional[int] = None,
     commit_sha: Optional[str] = None,
     commit_date=None,
@@ -647,6 +662,8 @@ def run_full_scan(
     file_tree = _walker_file_tree(repo_path)
     commit_log = _walker_commit_log(repo_path, limit=200)
 
+    if on_file_progress:
+        on_file_progress(0, 2)
     log.info("[scan %d] Full scan — Pass 1 (map)", scan_id)
     if on_status:
         on_status("🗺  Pass 1 — building risk map…")
@@ -665,6 +682,8 @@ def run_full_scan(
         on_status=on_status,
     )
 
+    if on_file_progress:
+        on_file_progress(1, 2)
     log.info("[scan %d] Full scan — Pass 2 (deep scan)", scan_id)
     if on_status:
         on_status("🔬 Pass 2 — deep file scan…")
@@ -679,6 +698,8 @@ def run_full_scan(
         on_status=on_status,
     )
 
+    if on_file_progress:
+        on_file_progress(2, 2)
     ocr_tokens = 0
     if config.ocr_model:
         ocr_tokens = _run_ocr_for_repo(
