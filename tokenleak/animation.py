@@ -31,7 +31,8 @@ class TokenCounter:
 
     def __init__(self, model: str) -> None:
         self.model = model
-        self._total = 0
+        self._input = 0
+        self._output = 0
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -81,9 +82,10 @@ class TokenCounter:
                 parts.append(f"— {data_size}")
             _console.print(f"[dim]  · {' '.join(parts)}[/dim]")
 
-    def add(self, tokens: int) -> None:
+    def add(self, input_tokens: int, output_tokens: int) -> None:
         with self._lock:
-            self._total += tokens
+            self._input += input_tokens
+            self._output += output_tokens
 
     def set_action(self, msg: str) -> None:
         with self._lock:
@@ -102,7 +104,7 @@ class TokenCounter:
     @property
     def total(self) -> int:
         with self._lock:
-            return self._total
+            return self._input + self._output
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
@@ -116,7 +118,8 @@ class TokenCounter:
         mode = self._mode
         data_size = self._data_size
         action = self._action
-        total = self._total
+        inp = self._input
+        out = self._output
 
         t = Text()
         t.append("🤖 ", style="dim")
@@ -164,7 +167,10 @@ class TokenCounter:
             t.append("\n")
 
         t.append("  💸 ", style="yellow")
-        t.append(f"{total:,} tokens", style="bold red")
+        t.append(f"{inp:,}", style="bold red")
+        t.append(" in  ", style="dim")
+        t.append(f"{out:,}", style="bold magenta")
+        t.append(" out", style="dim")
         t.append(f"   {s}", style="bold red")
 
         return t
@@ -193,10 +199,14 @@ class TokenCounter:
         self._running = False
         if self._thread:
             self._thread.join(timeout=2)
-        total = self._total
-        if total > 0:
+        inp = self._input
+        out = self._output
+        if inp + out > 0:
             _console.print(
-                f"[yellow]💸 Total tokens:[/yellow] [bold red]{total:,}[/bold red]"
+                f"[yellow]💸 Tokens:[/yellow] "
+                f"[bold red]{inp:,}[/bold red][dim] in[/dim]  "
+                f"[bold magenta]{out:,}[/bold magenta][dim] out[/dim]  "
+                f"[dim]({inp + out:,} total)[/dim]"
             )
         else:
             _console.print("[dim]  · 0 tokens[/dim]")

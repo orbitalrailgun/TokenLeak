@@ -62,20 +62,20 @@ def analyze_image(
     image_bytes: bytes,
     mime_type: str = "image/png",
     context: str = "",
-) -> tuple[Optional[str], int]:
+) -> tuple[Optional[str], int, int]:
     """Send a single image to a vision model for security analysis.
 
-    Returns (finding_text, tokens_used).
+    Returns (finding_text, prompt_tokens, completion_tokens).
     finding_text is None when the image is clean or the call fails.
     """
     if mime_type not in SUPPORTED_MIME_TYPES:
         log.debug("OCR: unsupported MIME type %s, skipping", mime_type)
-        return None, 0
+        return None, 0, 0
     if not image_bytes:
-        return None, 0
+        return None, 0, 0
     if len(image_bytes) > _MAX_IMAGE_BYTES:
         log.warning("OCR: image too large (%d bytes), skipping %s", len(image_bytes), context)
-        return None, 0
+        return None, 0, 0
 
     b64 = base64.b64encode(image_bytes).decode()
     prompt = f"Context: {context}\n\n{_SECURITY_PROMPT}" if context else _SECURITY_PROMPT
@@ -95,18 +95,19 @@ def analyze_image(
             }],
             max_tokens=800,
         )
-        tokens = response.usage.total_tokens if response.usage else 0
+        pt = response.usage.prompt_tokens if response.usage else 0
+        ct = response.usage.completion_tokens if response.usage else 0
         result = (response.choices[0].message.content or "").strip()
-        log.debug("OCR response for %s: %s (tokens=%d)", context or "image", result[:80], tokens)
+        log.debug("OCR response for %s: %s (in=%d out=%d)", context or "image", result[:80], pt, ct)
         if not result or result.upper() == "CLEAN":
-            return None, tokens
-        return result, tokens
+            return None, pt, ct
+        return result, pt, ct
     except Exception as exc:
         from tokenleak.agent.client import InsufficientFundsError, is_billing_error
         if is_billing_error(exc):
             raise InsufficientFundsError(str(exc)) from exc
         log.warning("OCR analysis failed (model=%s, context=%s): %s", model, context, exc)
-        return None, 0
+        return None, 0, 0
 
 
 def extract_notebook_images(notebook_json: str) -> list[tuple[int, str, bytes]]:

@@ -104,8 +104,8 @@ def chat(
     return response
 
 
-def extract_usage(response: ChatCompletion) -> int:
-    """Return total tokens used in the response."""
+def extract_usage(response: ChatCompletion) -> tuple[int, int]:
+    """Return (prompt_tokens, completion_tokens) for the response."""
     if response.usage:
-        return response.usage.total_tokens
-    return 0
+        return response.usage.prompt_tokens or 0, response.usage.completion_tokens or 0
+    return 0, 0

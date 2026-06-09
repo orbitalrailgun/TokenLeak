@@ -178,7 +178,7 @@ def _agent_loop(
     user_message: str,
     tools: list[dict],
     max_iterations: int,
-    on_tokens: Optional[Callable[[int], None]] = None,
+    on_tokens: Optional[Callable[[int, int], None]] = None,
     on_status: Optional[Callable[[str], None]] = None,
 ) -> tuple[int, str]:
     """Run one agent conversation. Returns (total_tokens, final_text)."""
@@ -203,10 +203,10 @@ def _agent_loop(
             if on_status:
                 on_status("⚠  context window full — stopping early")
             break
-        tokens = extract_usage(response)
-        total_tokens += tokens
+        pt, ct = extract_usage(response)
+        total_tokens += pt + ct
         if on_tokens:
-            on_tokens(tokens)  # incremental, not cumulative — counter.add() accumulates itself
+            on_tokens(pt, ct)  # incremental per-call (input, output) — counter.add() accumulates
 
         msg = response.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))
@@ -266,7 +266,7 @@ def _ocr_images(
     model: str,
     scan_id: int,
     db: Database,
-    on_tokens: Optional[Callable[[int], None]],
+    on_tokens: Optional[Callable[[int, int], None]],
     on_status: Optional[Callable[[str], None]],
     repo_id: Optional[int] = None,
     commit_sha: Optional[str] = None,
@@ -280,10 +280,10 @@ def _ocr_images(
         mime = mime_for_extension(Path(img_path).suffix) or "image/png"
         if on_status:
             on_status(f"🖼  OCR → {img_path}")
-        finding, tokens = analyze_image(client, model, img_bytes, mime, context=img_path)
-        total += tokens
+        finding, pt, ct = analyze_image(client, model, img_bytes, mime, context=img_path)
+        total += pt + ct
         if on_tokens:
-            on_tokens(tokens)
+            on_tokens(pt, ct)
         if finding:
             db.save_alert(
                 scan_id=scan_id,
@@ -309,7 +309,7 @@ def _ocr_notebooks(
     model: str,
     scan_id: int,
     db: Database,
-    on_tokens: Optional[Callable[[int], None]],
+    on_tokens: Optional[Callable[[int, int], None]],
     on_status: Optional[Callable[[str], None]],
     repo_id: Optional[int] = None,
     commit_sha: Optional[str] = None,
@@ -336,10 +336,10 @@ def _ocr_notebooks(
             context = f"{nb_path} cell[{cell_idx}]"
             if on_status:
                 on_status(f"📓  OCR → {context}")
-            finding, tokens = analyze_image(client, model, img_bytes, mime, context=context)
-            total += tokens
+            finding, pt, ct = analyze_image(client, model, img_bytes, mime, context=context)
+            total += pt + ct
             if on_tokens:
-                on_tokens(tokens)
+                on_tokens(pt, ct)
             if finding:
                 db.save_alert(
                     scan_id=scan_id,
@@ -370,7 +370,7 @@ def _run_ocr_for_commit(
     scan_id: int,
     config: Config,
     client,
-    on_tokens: Optional[Callable[[int], None]] = None,
+    on_tokens: Optional[Callable[[int, int], None]] = None,
     on_status: Optional[Callable[[str], None]] = None,
     repo_id: Optional[int] = None,
     commit_date=None,
@@ -416,7 +416,7 @@ def _run_ocr_for_repo(
     scan_id: int,
     config: Config,
     client,
-    on_tokens: Optional[Callable[[int], None]] = None,
+    on_tokens: Optional[Callable[[int, int], None]] = None,
     on_status: Optional[Callable[[str], None]] = None,
     repo_id: Optional[int] = None,
     commit_sha: Optional[str] = None,
@@ -544,7 +544,7 @@ def run_diff_scan(
     db: Database,
     config: Config,
     notifications=None,
-    on_tokens: Optional[Callable[[int], None]] = None,
+    on_tokens: Optional[Callable[[int, int], None]] = None,
     on_status: Optional[Callable[[str], None]] = None,
     on_file_progress: Optional[Callable[[int, int], None]] = None,
     repo_id: Optional[int] = None,
@@ -636,7 +636,7 @@ def run_full_scan(
     db: Database,
     config: Config,
     notifications=None,
-    on_tokens: Optional[Callable[[int], None]] = None,
+    on_tokens: Optional[Callable[[int, int], None]] = None,
     on_status: Optional[Callable[[str], None]] = None,
     on_file_progress: Optional[Callable[[int, int], None]] = None,
     repo_id: Optional[int] = None,
