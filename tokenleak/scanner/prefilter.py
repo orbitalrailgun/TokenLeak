@@ -90,7 +90,8 @@ _PLACEHOLDER_RE = re.compile(
     [A-Z0-9]{3,}X{4,}                      |   # AKIAXXXXXXXXXXXXXXXX
     <[A-Z_\s]{3,}>                          |   # <YOUR_KEY_HERE>
     \$\{[^}]{3,}\}                          |   # ${VARIABLE_NAME}
-    %\([^)]{3,}\)s                              # %(variable_name)s
+    %\([^)]{3,}\)s                          |   # %(variable_name)s
+    \*{4,}                                      # ****... masked/redacted secrets
 """,
 )
 

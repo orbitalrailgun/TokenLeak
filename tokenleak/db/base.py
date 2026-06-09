@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS alerts (
     triggered_by      TEXT,
     ai_model          TEXT,
     is_false_positive INTEGER DEFAULT 0,
-    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(scan_id, file_path, line_start, alert_type)
 );
 
 CREATE TABLE IF NOT EXISTS notes (

@@ -63,7 +63,35 @@ class PostgresDB(Database):
                     f"ALTER TABLE scans ADD COLUMN IF NOT EXISTS {col_name} {col_def}"
                 )
             self._migrate_scans_constraint(cur)
+            self._migrate_alerts_constraint(cur)
         self._conn.commit()
+
+    def _migrate_alerts_constraint(self, cur) -> None:
+        """Add UNIQUE index on (scan_id, file_path, line_start, alert_type) to alerts.
+
+        Deduplicates existing rows first (keeps min id), then creates the index.
+        Safe to call on every startup — skips if index already exists.
+        """
+        cur.execute("""
+            SELECT 1 FROM pg_indexes
+            WHERE schemaname = current_schema()
+              AND tablename = 'alerts'
+              AND indexname = 'alerts_dedup_idx'
+        """)
+        if cur.fetchone():
+            return
+        # Remove duplicates before creating the unique index
+        cur.execute("""
+            DELETE FROM alerts
+            WHERE id NOT IN (
+                SELECT MIN(id) FROM alerts
+                GROUP BY scan_id, file_path, line_start, alert_type
+            )
+        """)
+        cur.execute("""
+            CREATE UNIQUE INDEX alerts_dedup_idx
+            ON alerts (scan_id, file_path, line_start, alert_type)
+        """)
 
     def _migrate_scans_constraint(self, cur) -> None:
         """Change UNIQUE(repo_id, commit_sha) → UNIQUE(repo_id, commit_sha, ai_model).
@@ -265,6 +293,7 @@ class PostgresDB(Database):
                 file_path, line_start, line_end, alert_type, severity,
                 agent_json, triggered_by, ai_model)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (scan_id, file_path, line_start, alert_type) DO NOTHING
                RETURNING id""",
             (
                 scan_id, repo_id, commit_sha, commit_date,
@@ -274,7 +303,7 @@ class PostgresDB(Database):
             ),
         )
         self._conn.commit()
-        return row["id"]
+        return row["id"] if row else 0
 
     def list_alerts(self, scan_id: int) -> list[AlertRow]:
         rows = self._fetchall(

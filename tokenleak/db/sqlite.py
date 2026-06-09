@@ -37,6 +37,7 @@ class SQLiteDB(Database):
         self._migrate_alerts()
         self._migrate_scans()
         self._migrate_scans_constraint()
+        self._migrate_alerts_constraint()
         self._conn.commit()
 
     def _migrate_alerts(self) -> None:
@@ -60,6 +61,53 @@ class SQLiteDB(Database):
             self._conn.execute("ALTER TABLE scans ADD COLUMN scan_mode TEXT")
         if "ai_model" not in existing:
             self._conn.execute("ALTER TABLE scans ADD COLUMN ai_model TEXT")
+
+    def _migrate_alerts_constraint(self) -> None:
+        """Add UNIQUE(scan_id, file_path, line_start, alert_type) to alerts table.
+
+        SQLite cannot ALTER a UNIQUE constraint, so the table is recreated.
+        Existing duplicates are dropped — first occurrence (lowest id) is kept.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='alerts'"
+        ).fetchone()
+        if not row:
+            return
+        sql_norm = re.sub(r"\s+", "", (row["sql"] or "")).lower()
+        if "unique(scan_id,file_path,line_start,alert_type)" in sql_norm:
+            return  # already has constraint
+
+        self._conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self._conn.execute("""
+                CREATE TABLE alerts_new (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scan_id           INTEGER NOT NULL REFERENCES scans(id),
+                    repo_id           INTEGER REFERENCES repos(id),
+                    commit_sha        TEXT,
+                    commit_date       DATETIME,
+                    file_path         TEXT,
+                    line_start        INTEGER DEFAULT 0,
+                    line_end          INTEGER DEFAULT 0,
+                    alert_type        TEXT,
+                    severity          TEXT,
+                    agent_json        TEXT,
+                    triggered_by      TEXT,
+                    ai_model          TEXT,
+                    is_false_positive INTEGER DEFAULT 0,
+                    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(scan_id, file_path, line_start, alert_type)
+                )
+            """)
+            # ORDER BY id so the first (lowest id) occurrence wins on conflict
+            self._conn.execute(
+                "INSERT OR IGNORE INTO alerts_new SELECT * FROM alerts ORDER BY id"
+            )
+            self._conn.execute("DROP TABLE alerts")
+            self._conn.execute("ALTER TABLE alerts_new RENAME TO alerts")
+            self._conn.commit()
+        finally:
+            self._conn.execute("PRAGMA foreign_keys = ON")
 
     def _migrate_scans_constraint(self) -> None:
         """Recreate scans table to broaden UNIQUE(repo_id, commit_sha) → UNIQUE(repo_id, commit_sha, ai_model).
@@ -244,7 +292,7 @@ class SQLiteDB(Database):
     ) -> int:
         cx = self._cx()
         cur = cx.execute(
-            """INSERT INTO alerts
+            """INSERT OR IGNORE INTO alerts
                (scan_id, repo_id, commit_sha, commit_date,
                 file_path, line_start, line_end, alert_type, severity,
                 agent_json, triggered_by, ai_model)
