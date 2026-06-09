@@ -16,14 +16,16 @@ def _build_parser() -> argparse.ArgumentParser:
         description="AI-powered git repository security scanner",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument("--noanimation", action="store_true", help="Disable token leak animation")
-    parser.add_argument(
-        "--no-prefilter",
-        action="store_true",
-        help="Disable pre-filter: send all file content to AI (slower, more thorough)",
-    )
 
     sub = parser.add_subparsers(dest="command", required=True)
+
+    def _add_scan_flags(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--noanimation", action="store_true", help="Disable token leak animation")
+        p.add_argument(
+            "--no-prefilter",
+            action="store_true",
+            help="Disable pre-filter: send all file content to AI (slower, more thorough)",
+        )
 
     # ── scan ──────────────────────────────────────────────────────────────────
     scan_p = sub.add_parser(
@@ -45,6 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="Write Markdown report to FILE (omit FILE to print to stdout)",
     )
+    _add_scan_flags(scan_p)
 
     # ── rescan ────────────────────────────────────────────────────────────────
     rescan_p = sub.add_parser(
@@ -54,6 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rescan_p.add_argument("targets", nargs="*", metavar="TARGET")
     rescan_p.add_argument("--sha", metavar="SHA", help="Full-scan at this specific commit SHA")
     rescan_p.add_argument("--report", nargs="?", const="-", metavar="FILE")
+    _add_scan_flags(rescan_p)
 
     # ── status ────────────────────────────────────────────────────────────────
     sub.add_parser("status", help="Show scan summary from the database")
