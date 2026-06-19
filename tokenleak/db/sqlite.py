@@ -146,14 +146,30 @@ class SQLiteDB(Database):
                     status           TEXT NOT NULL DEFAULT 'pending',
                     scan_mode        TEXT,
                     ai_model         TEXT,
+                    branch           TEXT,
                     alert_count      INTEGER DEFAULT 0,
                     note_count       INTEGER DEFAULT 0,
                     tokens_used      INTEGER DEFAULT 0,
+                    input_tokens     INTEGER DEFAULT 0,
+                    output_tokens    INTEGER DEFAULT 0,
                     error_message    TEXT,
                     UNIQUE(repo_id, commit_sha, ai_model)
                 )
             """)
-            self._conn.execute("INSERT INTO scans_new SELECT * FROM scans")
+            # Copy only the columns that existed before this migration; new columns
+            # (branch, input_tokens, output_tokens) get their DEFAULT values.
+            self._conn.execute("""
+                INSERT INTO scans_new
+                    (id, repo_id, commit_sha, commit_message, commit_author,
+                     commit_date, scan_started_at, scan_finished_at, status,
+                     scan_mode, ai_model, alert_count, note_count, tokens_used,
+                     error_message)
+                SELECT id, repo_id, commit_sha, commit_message, commit_author,
+                       commit_date, scan_started_at, scan_finished_at, status,
+                       scan_mode, ai_model, alert_count, note_count, tokens_used,
+                       error_message
+                FROM scans
+            """)
             self._conn.execute("DROP TABLE scans")
             self._conn.execute("ALTER TABLE scans_new RENAME TO scans")
             self._conn.commit()

@@ -76,6 +76,14 @@ def clone(url: str, config: Config) -> Path:
     # Remove all exec bits on the working tree (not .git internals)
     _remove_exec_bits(dest)
 
+    # Tell git not to track permission changes — we intentionally stripped
+    # execute bits above, but git would otherwise see every file as "modified",
+    # which causes `git checkout --detach` to fail when scanning branch tips.
+    subprocess.run(
+        ["git", "-C", str(dest), "config", "core.fileMode", "false"],
+        capture_output=True, timeout=10,
+    )
+
     log.info("Cloned %s successfully", url)
     return dest
 

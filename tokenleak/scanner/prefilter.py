@@ -41,6 +41,19 @@ def _high_entropy_tokens(line: str) -> list[str]:
 # ── Exclusion: template / example files ───────────────────────────────────────
 # These files are documentation for configuration — never real secrets.
 
+# Lines that are infrastructure boilerplate, never real credentials.
+_BOILERPLATE_LINE_RE = re.compile(
+    r"""(?ix)
+    # Auto-generated git remote origin lines in README files
+    git\s+remote\s+add\s+origin\s+https?://   |
+    # GitLab/GitHub CI badge markdown
+    \[\s*!\[.*?\]\s*\(https?://.*?/badge       |
+    # git clone instructions
+    ^\s*git\s+clone\s+https?://
+""",
+    re.MULTILINE,
+)
+
 _EXCLUDED_NAMES = re.compile(
     r"""(?ix)
     (^|/)
@@ -95,13 +108,41 @@ _PLACEHOLDER_RE = re.compile(
 """,
 )
 
+# Well-known dev-only default values that should never be treated as real secrets.
+# All comparisons are done case-insensitively against the stripped value.
+_DEV_DEFAULTS: frozenset[str] = frozenset({
+    "postgres", "postgresql", "mysql", "redis", "mongo", "mongodb",
+    "admin", "administrator", "root",
+    "secret", "secrets",
+    "password", "passwd", "pass",
+    "changeit", "changeme", "change_me",
+    "test", "testing",
+    "123", "1234", "12345", "123456",
+    "localhost", "127.0.0.1",
+    "example", "demo",
+    "default",
+    "none", "null", "nil", "undefined",
+    "todo", "fixme",
+})
+
+
+_COMMENT_RE = re.compile(r"^\s*(?:#|//|--|/\*|\*)")
+
 
 def _is_placeholder_line(line: str) -> bool:
-    """Return True if the line's value is clearly a template placeholder."""
+    """Return True if the line's value is clearly a template placeholder or dev default."""
+    # Full-line comments (Python/shell #, C/JS //, SQL --, block comment /* *)
+    # may contain credential-like strings but are not active code.
+    if _COMMENT_RE.match(line):
+        return True
+
     # Only check the value part (right of = or :)
     m = re.search(r"[=:]\s*(.+)$", line)
     value = m.group(1).strip().strip("'\"`") if m else line
-    return bool(_PLACEHOLDER_RE.search(value))
+    if _PLACEHOLDER_RE.search(value):
+        return True
+    # Known dev-only default values
+    return value.lower() in _DEV_DEFAULTS
 
 
 # ── Regex patterns ─────────────────────────────────────────────────────────────
@@ -216,8 +257,10 @@ def filter_file(path: Path, content: str) -> FileResult:
     result = FileResult(path=path, is_suspicious_name=suspicious_name)
 
     for lineno, line in enumerate(content.splitlines(), start=1):
-        # Skip lines that are clearly placeholder/template values
+        # Skip lines that are clearly placeholder/template values or boilerplate
         if _is_placeholder_line(line):
+            continue
+        if _BOILERPLATE_LINE_RE.search(line):
             continue
 
         for pat in _PATTERNS:

@@ -97,7 +97,14 @@ def chat(
         if is_billing_error(exc):
             raise InsufficientFundsError(str(exc)) from exc
         msg = str(exc)
-        if "max_tokens must be at least 1" in msg or "context_length_exceeded" in msg:
+        msg_lower = msg.lower()
+        if (
+            "max_tokens must be at least 1" in msg
+            or "context_length_exceeded" in msg
+            or "maximum context length" in msg_lower
+            or "payload too large" in msg_lower
+            or "request entity too large" in msg_lower
+        ):
             raise ContextWindowExceededError(msg) from exc
         raise
     log.debug("AI response: usage=%s", response.usage)

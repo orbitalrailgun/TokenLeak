@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import unicodedata
+import zlib
 from pathlib import Path
 from typing import Any, Optional
 
@@ -112,6 +113,23 @@ def _sanitize_path(path: Optional[str]) -> Optional[str]:
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
+def _synthetic_line(alert_type: str, description: str, code_snippet: str) -> int:
+    """Return a stable negative line number for binary/unpositioned findings.
+
+    Binary files have no real line numbers, so line_start=0 would collide in
+    UNIQUE(scan_id, file_path, line_start, alert_type) when the same file has
+    multiple distinct findings of the same type.  We use a content-derived CRC32
+    to produce a unique-per-finding negative integer:
+
+      - Negative → clearly not a real line number; report/UI shows "N/A"
+      - Content-stable → same finding saved twice → same value → deduplicated
+      - Different content → different value → all distinct findings are stored
+    """
+    key = f"{alert_type}|{description[:200]}|{code_snippet[:200]}"
+    crc = zlib.crc32(key.encode()) & 0x7FFF_FFFF  # 31-bit positive
+    return -max(crc, 1)
+
+
 @mcp.tool()
 def save_alert(
     file_path: str,
@@ -134,9 +152,16 @@ def save_alert(
         code_snippet: The relevant code or value (redact actual secret value if very long).
         how_used: How the secret appears to be used in the code.
         confirmation: Evidence confirming this is a real secret, not a placeholder.
-        line_start: First line number of the finding.
+        line_start: First line number of the finding (0 if unknown / binary file).
         line_end: Last line number of the finding (0 = same as line_start).
     """
+    if line_start == 0:
+        # Binary or unpositioned finding — derive a content-stable synthetic
+        # line number so different findings in the same file don't collide on
+        # UNIQUE(scan_id, file_path, line_start, alert_type).
+        line_start = _synthetic_line(alert_type, description, code_snippet)
+        line_end = line_start
+
     agent_json = {
         "description": description,
         "code_snippet": code_snippet,
@@ -156,7 +181,7 @@ def save_alert(
     if _notifications is not None:
         try:
             sev_icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}.get(severity, "⚪")
-            line_info = f" line {line_start}" if line_start else ""
+            line_info = f" line {line_start}" if line_start > 0 else ""
             _notifications.send(
                 f"{sev_icon} **{severity.upper()} [{alert_type}]** "
                 f"`{file_path}`{line_info}\n{description}"

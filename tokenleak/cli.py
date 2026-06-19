@@ -101,13 +101,14 @@ def scan_repo(
         Full scan at that specific commit (treats HEAD as that commit).
     """
     from tokenleak.agent.runner import run_diff_scan, run_full_scan
-    from tokenleak.agent.client import InsufficientFundsError
+    from tokenleak.agent.client import build_client, InsufficientFundsError
 
     triggered_by = "rescan" if rescan else "scan"
     provider = _guess_provider(url)
     repo_id = db.upsert_repo(url, provider, name=url.rstrip("/").split("/")[-1].removesuffix(".git"))
     repo_path: Optional[Path] = None
     counter = TokenCounter(model=config.ai_model)
+    ai_client = build_client(config)
 
     try:
         try:
@@ -163,7 +164,7 @@ def scan_repo(
                         on_tokens=counter.add, on_status=counter.set_action,
                         on_file_progress=counter.set_file_progress,
                         repo_id=repo_id, commit_sha=target.sha, commit_date=target.date,
-                        triggered_by=triggered_by,
+                        triggered_by=triggered_by, client=ai_client,
                     )
                     db.finish_scan(scan_id, ScanStatus.DONE)
                 except InsufficientFundsError as exc:
@@ -197,7 +198,7 @@ def scan_repo(
                         on_tokens=counter.add, on_status=counter.set_action,
                         on_file_progress=counter.set_file_progress,
                         repo_id=repo_id, commit_date=target.date,
-                        triggered_by=triggered_by,
+                        triggered_by=triggered_by, client=ai_client,
                     )
                     db.finish_scan(scan_id, ScanStatus.DONE)
                 except InsufficientFundsError as exc:
@@ -260,6 +261,7 @@ def scan_repo(
                         on_file_progress=counter.set_file_progress,
                         repo_id=repo_id, commit_sha=head_commit.sha,
                         commit_date=head_commit.date, triggered_by=triggered_by,
+                        client=ai_client,
                     )
                     db.finish_scan(scan_id, ScanStatus.DONE)
                     done_shas.add(head_commit.sha)
@@ -303,6 +305,7 @@ def scan_repo(
                             on_file_progress=counter.set_file_progress,
                             repo_id=repo_id, commit_sha=tip.sha,
                             commit_date=tip.date, triggered_by=triggered_by,
+                            client=ai_client,
                         )
                         db.finish_scan(scan_id, ScanStatus.DONE)
                         done_shas.add(tip.sha)
@@ -361,7 +364,7 @@ def scan_repo(
                     on_tokens=counter.add, on_status=counter.set_action,
                     on_file_progress=counter.set_file_progress,
                     repo_id=repo_id, commit_date=commit.date,
-                    triggered_by=triggered_by,
+                    triggered_by=triggered_by, client=ai_client,
                 )
                 db.finish_scan(scan_id, ScanStatus.DONE)
             except InsufficientFundsError as exc:
@@ -377,6 +380,7 @@ def scan_repo(
 
     finally:
         counter.stop()
+        ai_client.close()
         if repo_path:
             clone_mod.remove(repo_path)
 

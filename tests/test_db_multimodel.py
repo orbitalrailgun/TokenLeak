@@ -126,12 +126,17 @@ def test_get_scan_without_model_returns_most_recent(db):
 
 # ── list_alerts_for_repo ──────────────────────────────────────────────────────
 
+_alert_counter = 0
+
+
 def _make_alert(db, scan_id, repo_id, commit_sha, ai_model, severity="high"):
+    global _alert_counter
+    _alert_counter += 1
     db.save_alert(
         scan_id=scan_id,
         file_path=".env",
-        line_start=1,
-        line_end=1,
+        line_start=_alert_counter,
+        line_end=_alert_counter,
         alert_type="hardcoded_secret",
         severity=severity,
         agent_json={"key": "value"},
@@ -142,6 +147,8 @@ def _make_alert(db, scan_id, repo_id, commit_sha, ai_model, severity="high"):
 
 
 def test_list_alerts_for_repo_filters_by_model(db):
+    global _alert_counter
+    _alert_counter = 0
     repo_id = db.upsert_repo("https://github.com/org/repo", "github")
     id_a = db.create_scan(repo_id, COMMIT, "msg", "author", None, ai_model=MODEL_A)
     id_b = db.create_scan(repo_id, COMMIT, "msg", "author", None, ai_model=MODEL_B)

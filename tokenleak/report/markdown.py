@@ -80,11 +80,16 @@ def generate(db: Database, scan_id: int, repo_url: str) -> str:
             fpath = alert.file_path or "(unknown file)"
             atype = (alert.alert_type or "?").upper()
 
+            line_ref = (
+                f"{alert.line_start}–{alert.line_end}"
+                if alert.line_start > 0
+                else "N/A"
+            )
             lines += [
                 f"### [{idx}] {_severity_emoji(sev)} {atype} — `{fpath}`",
                 "",
                 f"**Severity:** {sev}  ",
-                f"**Lines:** {alert.line_start}–{alert.line_end}  ",
+                f"**Lines:** {line_ref}  ",
             ]
 
             if alert.commit_sha:
