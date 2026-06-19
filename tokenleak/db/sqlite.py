@@ -65,6 +65,8 @@ class SQLiteDB(Database):
             self._conn.execute("ALTER TABLE scans ADD COLUMN input_tokens INTEGER DEFAULT 0")
         if "output_tokens" not in existing:
             self._conn.execute("ALTER TABLE scans ADD COLUMN output_tokens INTEGER DEFAULT 0")
+        if "branch" not in existing:
+            self._conn.execute("ALTER TABLE scans ADD COLUMN branch TEXT")
 
     def _migrate_alerts_constraint(self) -> None:
         """Add UNIQUE(scan_id, file_path, line_start, alert_type) to alerts table.
@@ -207,17 +209,18 @@ class SQLiteDB(Database):
 
     def create_scan(self, repo_id: int, commit_sha: str, commit_message: str,
                     commit_author: str, commit_date: Optional[datetime],
-                    scan_mode: str = "diff", ai_model: str = "") -> int:
+                    scan_mode: str = "diff", ai_model: str = "",
+                    branch: Optional[str] = None) -> int:
         cx = self._cx()
         model = ai_model or None
         cx.execute(
             """INSERT OR IGNORE INTO scans
                (repo_id, commit_sha, commit_message, commit_author, commit_date,
-                status, scan_mode, ai_model)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                status, scan_mode, ai_model, branch)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (repo_id, commit_sha, commit_message, commit_author,
              commit_date.isoformat() if commit_date else None,
-             ScanStatus.PENDING, scan_mode, model),
+             ScanStatus.PENDING, scan_mode, model, branch or None),
         )
         cx.commit()
         # INSERT OR IGNORE silently skips on UNIQUE(repo_id, commit_sha, ai_model) conflict;

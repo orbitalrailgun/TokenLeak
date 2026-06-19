@@ -58,6 +58,7 @@ class PostgresDB(Database):
             for col_name, col_def in [
                 ("scan_mode",     "TEXT"),
                 ("ai_model",      "TEXT"),
+                ("branch",        "TEXT"),
                 ("input_tokens",  "INTEGER DEFAULT 0"),
                 ("output_tokens", "INTEGER DEFAULT 0"),
             ]:
@@ -207,17 +208,18 @@ class PostgresDB(Database):
 
     def create_scan(self, repo_id: int, commit_sha: str, commit_message: str,
                     commit_author: str, commit_date: Optional[datetime],
-                    scan_mode: str = "diff", ai_model: str = "") -> int:
+                    scan_mode: str = "diff", ai_model: str = "",
+                    branch: Optional[str] = None) -> int:
         model = ai_model or None
         row = self._fetchone(
             """INSERT INTO scans
                (repo_id, commit_sha, commit_message, commit_author, commit_date,
-                status, scan_mode, ai_model)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                status, scan_mode, ai_model, branch)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (repo_id, commit_sha, ai_model) DO NOTHING
                RETURNING id""",
             (repo_id, commit_sha, commit_message, commit_author, commit_date,
-             ScanStatus.PENDING, scan_mode, model),
+             ScanStatus.PENDING, scan_mode, model, branch or None),
         )
         self._conn.commit()
         if row:

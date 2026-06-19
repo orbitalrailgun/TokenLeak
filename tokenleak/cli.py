@@ -141,12 +141,12 @@ def scan_repo(
             if rescan:
                 # rescan --sha: full scan (HEAD treated as this commit's state)
                 console.print(f"[dim]Mode: full (rescan --sha) | Commit: {target.sha[:8]}[/dim]")
+                head_branch = get_head_branch(repo_path)
                 scan_id = db.create_scan(
                     repo_id, target.sha, target.message, target.author, target.date,
-                    scan_mode="full", ai_model=config.ai_model,
+                    scan_mode="full", ai_model=config.ai_model, branch=head_branch or None,
                 )
                 db.start_scan(scan_id)
-                head_branch = get_head_branch(repo_path)
                 file_count = get_head_file_count(repo_path)
                 counter.set_commit(
                     target.sha,
@@ -236,13 +236,13 @@ def scan_repo(
                 branch_count = len(list_branch_tips(repo_path, exclude_shas={head_commit.sha})) if config.scan_all_branches else 0
                 mode_label = f"full (HEAD + {branch_count} branch tip(s)) + diff (history)" if branch_count else "full (HEAD) + diff (history)"
                 console.print(f"[dim]Mode: {mode_label} | Commits: {len(all_commits)}[/dim]")
+                head_branch = get_head_branch(repo_path)
                 scan_id = db.create_scan(
                     repo_id, head_commit.sha, head_commit.message,
                     head_commit.author, head_commit.date, scan_mode="full",
-                    ai_model=config.ai_model,
+                    ai_model=config.ai_model, branch=head_branch or None,
                 )
                 db.start_scan(scan_id)
-                head_branch = get_head_branch(repo_path)
                 file_count = get_head_file_count(repo_path)
                 counter.set_commit(
                     head_commit.sha,
@@ -280,6 +280,7 @@ def scan_repo(
                     scan_id = db.create_scan(
                         repo_id, tip.sha, tip.message, tip.author, tip.date,
                         scan_mode="full", ai_model=config.ai_model,
+                        branch=tip.branch or None,
                     )
                     db.start_scan(scan_id)
                     checked_out = False

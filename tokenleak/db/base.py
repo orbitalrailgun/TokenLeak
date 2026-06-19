@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS scans (
     status          TEXT NOT NULL DEFAULT 'pending',
     scan_mode       TEXT,
     ai_model        TEXT,
+    branch          TEXT,
     alert_count     INTEGER DEFAULT 0,
     note_count      INTEGER DEFAULT 0,
     tokens_used     INTEGER DEFAULT 0,
@@ -89,6 +90,7 @@ CREATE TABLE IF NOT EXISTS scans (
     status           TEXT NOT NULL DEFAULT 'pending',
     scan_mode        TEXT,
     ai_model         TEXT,
+    branch           TEXT,
     alert_count      INTEGER DEFAULT 0,
     note_count       INTEGER DEFAULT 0,
     tokens_used      INTEGER DEFAULT 0,
@@ -163,6 +165,7 @@ class ScanRow:
     error_message: Optional[str] = None
     scan_mode: Optional[str] = None
     ai_model: Optional[str] = None
+    branch: Optional[str] = None
 
 
 @dataclass
@@ -214,7 +217,8 @@ class Database(ABC):
     @abstractmethod
     def create_scan(self, repo_id: int, commit_sha: str, commit_message: str,
                     commit_author: str, commit_date: Optional[datetime],
-                    scan_mode: str = "diff", ai_model: str = "") -> int: ...
+                    scan_mode: str = "diff", ai_model: str = "",
+                    branch: Optional[str] = None) -> int: ...
 
     @abstractmethod
     def start_scan(self, scan_id: int) -> None: ...
