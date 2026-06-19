@@ -1,0 +1,36 @@
+# SYNTHETIC TEST CREDENTIALS — NOT REAL
+
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+env:
+  NPM_TOKEN: npm_8Bg5tXQJRrnCnDe2VlPqS7HsMkYiZwOdvULA9xPb3jKf
+  PYPI_TOKEN: pypi-AgEIcHlwaS5vcmcCJDEyMzQ1Njc4LWFiY2QtZWYwMS0yMzQ1LTY3ODlhYmNkZWYwMUFBQUFBQUFBQUFBQQ
+  SLACK_BOT_TOKEN: xoxb-17653285-803498734598-Yn4VoGJQNbfJCOmvwFRbbXsq
+  SLACK_SIGNING_SECRET: 8f742231b10e8888abcd12345678ef9a
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish to npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: npm_8Bg5tXQJRrnCnDe2VlPqS7HsMkYiZwOdvULA9xPb3jKf
+
+      - name: Deploy to server
+        run: |
+          ssh deploy@prod.example.com "cd /app && git pull && systemctl restart app"
+        env:
+          SSH_PRIVATE_KEY: |
+            -----BEGIN RSA PRIVATE KEY-----
+            MIIEowIBAAKCAQEA2a2rwplBQLzHPZe5TESTFAKEKEY1234567890abcdefghij
+            klmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/AAABBBCCC
+            -----END RSA PRIVATE KEY-----
+</content>
+</invoke>

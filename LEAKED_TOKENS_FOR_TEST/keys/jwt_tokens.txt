@@ -1,0 +1,15 @@
+# SYNTHETIC TEST CREDENTIALS — NOT REAL
+
+# JWT (HS256, payload: {"sub":"1234567890","name":"John Doe","iat":1516239022})
+# This is the canonical example from jwt.io — it is well-known and non-functional.
+ACCESS_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+
+REFRESH_TOKEN=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzQyIiwicm9sZSI6ImFkbWluIiwiZXhwIjoxOTk5OTk5OTk5fQ.SYNTHETIC_SIGNATURE_NOT_REAL_abcdefghijklmnop
+
+# Telegram bot token (format: <bot_id>:<token>)
+TELEGRAM_BOT_TOKEN=1234567890:ABCDefGhIjKlMnOpQrStUvWxYz_SyNtHeTiC
+
+# Google API key
+GOOGLE_MAPS_KEY=AIzaSyD-9tSrke72I6e0DVFaR_ShFKiCFXcrbxY
+</content>
+</invoke>

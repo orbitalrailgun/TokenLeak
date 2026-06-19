@@ -1,0 +1,19 @@
+# SYNTHETIC TEST CREDENTIALS — NOT REAL
+
+# PostgreSQL
+postgresql://app_admin:Tr0ub4dor&3correct@db-primary.prod.example.com:5432/appdb
+postgresql://readonly:R3adOnlyP@ss!@replica.prod.example.com:5432/appdb
+
+# MongoDB
+mongodb://mongouser:M0ng0S3cr3t!@mongo.prod.example.com:27017/main?authSource=admin
+
+# Redis (with password)
+redis://:R3dis-P@ssword-2024@cache.prod.example.com:6379/0
+
+# RabbitMQ
+amqp://rabbitmq_user:Rabb1tS3cr3t!@mq.prod.example.com:5672/vhost
+
+# SMTP
+smtp://mailer:Sm7p-P@ssword!@smtp.corp.example.com:587
+</content>
+</invoke>
