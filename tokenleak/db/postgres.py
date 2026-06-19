@@ -56,8 +56,10 @@ class PostgresDB(Database):
                     f"ALTER TABLE alerts ADD COLUMN IF NOT EXISTS {col_name} {col_def}"
                 )
             for col_name, col_def in [
-                ("scan_mode", "TEXT"),
-                ("ai_model",  "TEXT"),
+                ("scan_mode",     "TEXT"),
+                ("ai_model",      "TEXT"),
+                ("input_tokens",  "INTEGER DEFAULT 0"),
+                ("output_tokens", "INTEGER DEFAULT 0"),
             ]:
                 cur.execute(
                     f"ALTER TABLE scans ADD COLUMN IF NOT EXISTS {col_name} {col_def}"
@@ -248,10 +250,14 @@ class PostgresDB(Database):
             (status, alert_count, note_count, error, scan_id),
         )
 
-    def update_scan_tokens(self, scan_id: int, tokens: int) -> None:
+    def update_scan_tokens(self, scan_id: int, input_tokens: int, output_tokens: int) -> None:
         self._execute(
-            "UPDATE scans SET tokens_used = tokens_used + %s WHERE id = %s",
-            (tokens, scan_id),
+            """UPDATE scans
+               SET tokens_used   = tokens_used   + %s,
+                   input_tokens  = input_tokens  + %s,
+                   output_tokens = output_tokens + %s
+               WHERE id = %s""",
+            (input_tokens + output_tokens, input_tokens, output_tokens, scan_id),
         )
 
     def list_scans(self, repo_id: Optional[int] = None,

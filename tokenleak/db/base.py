@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS scans (
     alert_count     INTEGER DEFAULT 0,
     note_count      INTEGER DEFAULT 0,
     tokens_used     INTEGER DEFAULT 0,
+    input_tokens    INTEGER DEFAULT 0,
+    output_tokens   INTEGER DEFAULT 0,
     error_message   TEXT,
     UNIQUE(repo_id, commit_sha, ai_model)
 );
@@ -90,6 +92,8 @@ CREATE TABLE IF NOT EXISTS scans (
     alert_count      INTEGER DEFAULT 0,
     note_count       INTEGER DEFAULT 0,
     tokens_used      INTEGER DEFAULT 0,
+    input_tokens     INTEGER DEFAULT 0,
+    output_tokens    INTEGER DEFAULT 0,
     error_message    TEXT,
     UNIQUE(repo_id, commit_sha, ai_model)
 );
@@ -149,6 +153,8 @@ class ScanRow:
     alert_count: int = 0
     note_count: int = 0
     tokens_used: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
     commit_message: Optional[str] = None
     commit_author: Optional[str] = None
     commit_date: Optional[datetime] = None
@@ -217,7 +223,7 @@ class Database(ABC):
     def finish_scan(self, scan_id: int, status: str, error: Optional[str] = None) -> None: ...
 
     @abstractmethod
-    def update_scan_tokens(self, scan_id: int, tokens: int) -> None: ...
+    def update_scan_tokens(self, scan_id: int, input_tokens: int, output_tokens: int) -> None: ...
 
     @abstractmethod
     def list_scans(self, repo_id: Optional[int] = None,

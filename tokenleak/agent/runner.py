@@ -180,13 +180,14 @@ def _agent_loop(
     max_iterations: int,
     on_tokens: Optional[Callable[[int, int], None]] = None,
     on_status: Optional[Callable[[str], None]] = None,
-) -> tuple[int, str]:
-    """Run one agent conversation. Returns (total_tokens, final_text)."""
+) -> tuple[int, int, str]:
+    """Run one agent conversation. Returns (input_tokens, output_tokens, final_text)."""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ]
-    total_tokens = 0
+    total_input = 0
+    total_output = 0
     final_text = ""
 
     for iteration in range(max_iterations):
@@ -204,7 +205,8 @@ def _agent_loop(
                 on_status("⚠  context window full — stopping early")
             break
         pt, ct = extract_usage(response)
-        total_tokens += pt + ct
+        total_input += pt
+        total_output += ct
         if on_tokens:
             on_tokens(pt, ct)  # incremental per-call (input, output) — counter.add() accumulates
 
@@ -215,7 +217,7 @@ def _agent_loop(
             final_text = msg.content or ""
             if on_status:
                 on_status("✓ analysis complete")
-            log.debug("Agent done after %d iterations, %d tokens", iteration + 1, total_tokens)
+            log.debug("Agent done after %d iterations, in=%d out=%d", iteration + 1, total_input, total_output)
             break
 
         for tc in msg.tool_calls:
@@ -248,7 +250,7 @@ def _agent_loop(
     else:
         log.warning("Agent reached max_iterations=%d", max_iterations)
 
-    return total_tokens, final_text
+    return total_input, total_output, final_text
 
 
 def _load_agent_md(config: Config) -> str:
@@ -273,15 +275,16 @@ def _ocr_images(
     commit_date=None,
     triggered_by: Optional[str] = None,
 ) -> int:
-    """Run OCR on a map of {path: raw_bytes}. Saves alerts directly. Returns tokens used."""
+    """Run OCR on a map of {path: raw_bytes}. Saves alerts directly. Returns (input, output) tokens."""
     from tokenleak.scanner.ocr import analyze_image, mime_for_extension
-    total = 0
+    total_in = total_out = 0
     for img_path, img_bytes in image_map.items():
         mime = mime_for_extension(Path(img_path).suffix) or "image/png"
         if on_status:
             on_status(f"🖼  OCR → {img_path}")
         finding, pt, ct = analyze_image(client, model, img_bytes, mime, context=img_path)
-        total += pt + ct
+        total_in += pt
+        total_out += ct
         if on_tokens:
             on_tokens(pt, ct)
         if finding:
@@ -300,7 +303,7 @@ def _ocr_images(
                 ai_model=model or None,
             )
             log.info("[scan %d] OCR alert in image file: %s", scan_id, img_path)
-    return total
+    return total_in, total_out
 
 
 def _ocr_notebooks(
@@ -317,10 +320,10 @@ def _ocr_notebooks(
     triggered_by: Optional[str] = None,
 ) -> int:
     """Run OCR on images embedded in notebooks. notebook_map is {path: json_text | Path}.
-    Saves alerts directly. Returns tokens used.
+    Saves alerts directly. Returns (input, output) tokens.
     """
     from tokenleak.scanner.ocr import analyze_image, extract_notebook_images
-    total = 0
+    total_in = total_out = 0
     for nb_path, nb_source in notebook_map.items():
         if hasattr(nb_source, "read_text"):
             # Path object (from get_repo_notebooks)
@@ -337,7 +340,8 @@ def _ocr_notebooks(
             if on_status:
                 on_status(f"📓  OCR → {context}")
             finding, pt, ct = analyze_image(client, model, img_bytes, mime, context=context)
-            total += pt + ct
+            total_in += pt
+            total_out += ct
             if on_tokens:
                 on_tokens(pt, ct)
             if finding:
@@ -360,7 +364,7 @@ def _ocr_notebooks(
                     ai_model=model or None,
                 )
                 log.info("[scan %d] OCR alert in notebook: %s cell[%d]", scan_id, nb_path, cell_idx)
-    return total
+    return total_in, total_out
 
 
 def _run_ocr_for_commit(
@@ -375,9 +379,9 @@ def _run_ocr_for_commit(
     repo_id: Optional[int] = None,
     commit_date=None,
     triggered_by: Optional[str] = None,
-) -> int:
+) -> tuple[int, int]:
     """OCR scan of all images and notebook outputs added/modified in one commit.
-    Returns total OCR tokens used.
+    Returns (input_tokens, output_tokens).
     """
     model = config.ocr_model
     if on_status:
@@ -388,26 +392,27 @@ def _run_ocr_for_commit(
 
     if not image_files and not notebooks:
         log.debug("[scan %d] OCR: no images or notebooks in commit %s", scan_id, sha[:8])
-        return 0
+        return 0, 0
 
     log.info("[scan %d] OCR: %d image file(s), %d notebook(s) in commit %s",
              scan_id, len(image_files), len(notebooks), sha[:8])
 
-    tokens = _ocr_images(
+    img_in, img_out = _ocr_images(
         image_files, client, model, scan_id, db, on_tokens, on_status,
         repo_id=repo_id, commit_sha=sha, commit_date=commit_date,
         triggered_by=triggered_by,
     )
-    tokens += _ocr_notebooks(
+    nb_in, nb_out = _ocr_notebooks(
         notebooks, client, model, scan_id, db, on_tokens, on_status,
         repo_id=repo_id, commit_sha=sha, commit_date=commit_date,
         triggered_by=triggered_by,
     )
+    total_in, total_out = img_in + nb_in, img_out + nb_out
 
     if on_status:
-        on_status(f"✓ OCR done ({tokens:,} tokens)")
-    log.info("[scan %d] OCR commit scan done. Tokens: %d", scan_id, tokens)
-    return tokens
+        on_status(f"✓ OCR done ({total_in + total_out:,} tokens)")
+    log.info("[scan %d] OCR commit scan done. in=%d out=%d", scan_id, total_in, total_out)
+    return total_in, total_out
 
 
 def _run_ocr_for_repo(
@@ -422,10 +427,10 @@ def _run_ocr_for_repo(
     commit_sha: Optional[str] = None,
     commit_date=None,
     triggered_by: Optional[str] = None,
-) -> int:
+) -> tuple[int, int]:
     """OCR scan of ALL image files and notebooks in the current HEAD of the repo.
     Used as a safety net after full scan Pass 2.
-    Returns total OCR tokens used.
+    Returns (input_tokens, output_tokens).
     """
     model = config.ocr_model
     if on_status:
@@ -436,7 +441,7 @@ def _run_ocr_for_repo(
 
     if not image_files_map and not notebooks_map:
         log.debug("[scan %d] OCR: no images or notebooks in repo", scan_id)
-        return 0
+        return 0, 0
 
     log.info("[scan %d] OCR full repo: %d image file(s), %d notebook(s)",
              scan_id, len(image_files_map), len(notebooks_map))
@@ -449,21 +454,22 @@ def _run_ocr_for_repo(
         except OSError:
             pass
 
-    tokens = _ocr_images(
+    img_in, img_out = _ocr_images(
         image_bytes_map, client, model, scan_id, db, on_tokens, on_status,
         repo_id=repo_id, commit_sha=commit_sha, commit_date=commit_date,
         triggered_by=triggered_by,
     )
-    tokens += _ocr_notebooks(
+    nb_in, nb_out = _ocr_notebooks(
         notebooks_map, client, model, scan_id, db, on_tokens, on_status,
         repo_id=repo_id, commit_sha=commit_sha, commit_date=commit_date,
         triggered_by=triggered_by,
     )
+    total_in, total_out = img_in + nb_in, img_out + nb_out
 
     if on_status:
-        on_status(f"✓ OCR full scan done ({tokens:,} tokens)")
-    log.info("[scan %d] OCR full repo scan done. Tokens: %d", scan_id, tokens)
-    return tokens
+        on_status(f"✓ OCR full scan done ({total_in + total_out:,} tokens)")
+    log.info("[scan %d] OCR full repo scan done. in=%d out=%d", scan_id, total_in, total_out)
+    return total_in, total_out
 
 
 # ── Diff mode helpers ─────────────────────────────────────────────────────────
@@ -595,7 +601,7 @@ def run_diff_scan(
         )
         if on_status:
             on_status(f"✓ prefilter: no candidates in {len(additions)} file(s)")
-        tokens = 0
+        total_in = total_out = 0
     else:
         log.info(
             "[scan %d] Diff candidates: %d/%d file(s) pass pre-filter",
@@ -605,7 +611,7 @@ def run_diff_scan(
             on_status(f"🧪 {len(candidates)}/{len(additions)} files passed prefilter → sending to AI")
 
         diff_text = _format_diff_for_agent(commit_sha, commit_author, commit_message, candidates)
-        tokens, _ = _agent_loop(
+        total_in, total_out, _ = _agent_loop(
             client=client,
             model=config.ai_model,
             system_prompt=system + "\n\n" + _DIFF_SCAN_PROMPT,
@@ -617,17 +623,18 @@ def run_diff_scan(
         )
 
     if config.ocr_model:
-        ocr_tokens = _run_ocr_for_commit(
+        ocr_in, ocr_out = _run_ocr_for_commit(
             repo_path, commit_sha, db, scan_id, config, client,
             on_tokens=on_tokens, on_status=on_status,
             repo_id=repo_id, commit_date=commit_date,
             triggered_by=triggered_by,
         )
-        tokens += ocr_tokens
+        total_in += ocr_in
+        total_out += ocr_out
 
-    db.update_scan_tokens(scan_id, tokens)
-    log.info("[scan %d] Diff scan done. Tokens: %d", scan_id, tokens)
-    return tokens
+    db.update_scan_tokens(scan_id, total_in, total_out)
+    log.info("[scan %d] Diff scan done. in=%d out=%d", scan_id, total_in, total_out)
+    return total_in + total_out
 
 
 def run_full_scan(
@@ -674,7 +681,7 @@ def run_full_scan(
     log.info("[scan %d] Full scan — Pass 1 (map)", scan_id)
     if on_status:
         on_status("🗺  Pass 1 — building risk map…")
-    tokens1, _ = _agent_loop(
+    in1, out1, _ = _agent_loop(
         client=client,
         model=config.ai_model,
         system_prompt=system + "\n\n" + _PASS1_PROMPT,
@@ -694,7 +701,7 @@ def run_full_scan(
     log.info("[scan %d] Full scan — Pass 2 (deep scan)", scan_id)
     if on_status:
         on_status("🔬 Pass 2 — deep file scan…")
-    tokens2, _ = _agent_loop(
+    in2, out2, _ = _agent_loop(
         client=client,
         model=config.ai_model,
         system_prompt=system + "\n\n" + _PASS2_PROMPT,
@@ -707,16 +714,18 @@ def run_full_scan(
 
     if on_file_progress:
         on_file_progress(2, 2)
-    ocr_tokens = 0
+    total_in = in1 + in2
+    total_out = out1 + out2
     if config.ocr_model:
-        ocr_tokens = _run_ocr_for_repo(
+        ocr_in, ocr_out = _run_ocr_for_repo(
             repo_path, db, scan_id, config, client,
             on_tokens=on_tokens, on_status=on_status,
             repo_id=repo_id, commit_sha=commit_sha, commit_date=commit_date,
             triggered_by=triggered_by,
         )
+        total_in += ocr_in
+        total_out += ocr_out
 
-    total = tokens1 + tokens2 + ocr_tokens
-    db.update_scan_tokens(scan_id, total)
-    log.info("[scan %d] Full scan done. Tokens: %d", scan_id, total)
-    return total
+    db.update_scan_tokens(scan_id, total_in, total_out)
+    log.info("[scan %d] Full scan done. in=%d out=%d", scan_id, total_in, total_out)
+    return total_in + total_out

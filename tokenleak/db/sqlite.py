@@ -61,6 +61,10 @@ class SQLiteDB(Database):
             self._conn.execute("ALTER TABLE scans ADD COLUMN scan_mode TEXT")
         if "ai_model" not in existing:
             self._conn.execute("ALTER TABLE scans ADD COLUMN ai_model TEXT")
+        if "input_tokens" not in existing:
+            self._conn.execute("ALTER TABLE scans ADD COLUMN input_tokens INTEGER DEFAULT 0")
+        if "output_tokens" not in existing:
+            self._conn.execute("ALTER TABLE scans ADD COLUMN output_tokens INTEGER DEFAULT 0")
 
     def _migrate_alerts_constraint(self) -> None:
         """Add UNIQUE(scan_id, file_path, line_start, alert_type) to alerts table.
@@ -249,11 +253,15 @@ class SQLiteDB(Database):
         )
         cx.commit()
 
-    def update_scan_tokens(self, scan_id: int, tokens: int) -> None:
+    def update_scan_tokens(self, scan_id: int, input_tokens: int, output_tokens: int) -> None:
         cx = self._cx()
         cx.execute(
-            "UPDATE scans SET tokens_used = tokens_used + ? WHERE id = ?",
-            (tokens, scan_id),
+            """UPDATE scans
+               SET tokens_used   = tokens_used   + ?,
+                   input_tokens  = input_tokens  + ?,
+                   output_tokens = output_tokens + ?
+               WHERE id = ?""",
+            (input_tokens + output_tokens, input_tokens, output_tokens, scan_id),
         )
         cx.commit()
 
