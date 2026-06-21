@@ -68,6 +68,7 @@ class Config:
     mattermost_url: Optional[str] = field(default_factory=lambda: os.getenv("TOKENLEAK_MATTERMOST_URL") or None)
     mattermost_token: Optional[str] = field(default_factory=lambda: os.getenv("TOKENLEAK_MATTERMOST_TOKEN") or None)
     mattermost_channel: str = field(default_factory=lambda: os.getenv("TOKENLEAK_MATTERMOST_CHANNEL", "tokenleak-alerts"))
+    mattermost_channel_id: str = field(default_factory=lambda: os.getenv("TOKENLEAK_MATTERMOST_CHANNEL_ID", ""))
 
     # Syslog
     syslog_enabled: bool = field(default_factory=lambda: _bool("TOKENLEAK_SYSLOG_ENABLED", True))

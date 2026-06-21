@@ -65,6 +65,35 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── mcp ───────────────────────────────────────────────────────────────────
     sub.add_parser("mcp", help="Start the MCP server over stdio (for external clients)")
 
+    # ── alerts_export ─────────────────────────────────────────────────────────
+    export_p = sub.add_parser(
+        "alerts_export",
+        help="Export alerts to CSV (stdout or file)",
+    )
+    export_p.add_argument(
+        "--output", "-o",
+        metavar="FILE",
+        help="Write CSV to FILE (default: stdout)",
+    )
+    export_p.add_argument(
+        "--repo",
+        metavar="URL",
+        help="Filter by repository URL",
+    )
+    export_p.add_argument(
+        "--scan-id",
+        type=int,
+        metavar="ID",
+        dest="scan_id",
+        help="Filter by specific scan ID",
+    )
+    export_p.add_argument(
+        "--ai-model",
+        metavar="MODEL",
+        dest="ai_model",
+        help="Filter by AI model (used with --repo)",
+    )
+
     return parser
 
 
@@ -75,7 +104,7 @@ def main() -> None:
     config = get_config()
 
     # Apply CLI overrides
-    set_animation(not args.noanimation)
+    set_animation(not getattr(args, "noanimation", False))
     if getattr(args, "no_prefilter", False):
         config.prefilter_enabled = False
     if getattr(args, "report", None) is not None:
@@ -88,7 +117,7 @@ def main() -> None:
         log_file=config.log_file or None,
     )
 
-    from tokenleak.cli import cmd_scan, cmd_status, cmd_mcp
+    from tokenleak.cli import cmd_scan, cmd_status, cmd_mcp, cmd_alerts_export
 
     if args.command in ("scan", "rescan"):
         # Prevent concurrent runs
@@ -113,6 +142,15 @@ def main() -> None:
 
     elif args.command == "mcp":
         cmd_mcp()
+
+    elif args.command == "alerts_export":
+        cmd_alerts_export(
+            output=getattr(args, "output", None),
+            repo_url=getattr(args, "repo", None),
+            scan_id=getattr(args, "scan_id", None),
+            ai_model=getattr(args, "ai_model", None),
+            config=config,
+        )
 
 
 if __name__ == "__main__":

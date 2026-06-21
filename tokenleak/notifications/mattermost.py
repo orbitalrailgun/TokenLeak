@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from typing import Optional
 
 import httpx
@@ -17,6 +18,7 @@ class Mattermost:
         self._url = (config.mattermost_url or "").rstrip("/")
         self._token = config.mattermost_token
         self._default_channel = config.mattermost_channel
+        self._channel_id = config.mattermost_channel_id or ""
         self._enabled = bool(self._url and self._token)
 
     @property
@@ -93,3 +95,69 @@ class Mattermost:
             )
         except Exception as exc:
             log.warning("Mattermost send_skipped_large_repo failed for %s: %s", repo_url, exc)
+
+    def send_alerts_csv_file(
+        self,
+        repo_url: str,
+        scan_id: int,
+        csv_content: str,
+        scan_mode: str = "",
+        alert_count: int = 0,
+    ) -> None:
+        """Upload a CSV alerts report as a file attachment to Mattermost.
+
+        Requires TOKENLEAK_MATTERMOST_CHANNEL_ID to be set — the Mattermost file
+        upload API needs a channel_id, not a channel name.  If not configured,
+        a warning is logged and the upload is skipped (text notifications still work).
+
+        Errors are logged and swallowed — never kills a scan.
+        """
+        if not self._enabled:
+            return
+        if not self._channel_id:
+            log.warning(
+                "Mattermost: TOKENLEAK_MATTERMOST_CHANNEL_ID is not set — "
+                "CSV file upload skipped for scan_id=%d", scan_id,
+            )
+            return
+        if not csv_content:
+            return
+
+        repo_name = repo_url.rstrip("/").split("/")[-1].removesuffix(".git")
+        date_str = datetime.date.today().isoformat()
+        mode_suffix = f"_{scan_mode}" if scan_mode else ""
+        filename = f"tokenleak_{repo_name}{mode_suffix}_{date_str}_scan{scan_id}.csv"
+
+        headers_auth = {"Authorization": f"Bearer {self._token}"}
+
+        try:
+            upload = httpx.post(
+                f"{self._url}/api/v4/files",
+                headers=headers_auth,
+                data={"channel_id": self._channel_id},
+                files={"files": (filename, csv_content.encode("utf-8"), "text/csv")},
+                timeout=60,
+            )
+            upload.raise_for_status()
+            file_id = upload.json()["file_infos"][0]["id"]
+
+            mode_label = f" режим `{scan_mode}`" if scan_mode else ""
+            n_label = f"{alert_count} alert(s)" if alert_count else "0 alerts"
+            message = (
+                f":bar_chart: **TokenLeak — CSV-отчёт** | `{repo_name}`{mode_label} | "
+                f"scan_id={scan_id} | {n_label}"
+            )
+            post = httpx.post(
+                f"{self._url}/api/v4/posts",
+                headers={**headers_auth, "Content-Type": "application/json"},
+                json={
+                    "channel_id": self._channel_id,
+                    "message": message,
+                    "file_ids": [file_id],
+                },
+                timeout=15,
+            )
+            post.raise_for_status()
+            log.info("Mattermost: CSV report uploaded for scan_id=%d (%s)", scan_id, filename)
+        except Exception as exc:
+            log.warning("Mattermost send_alerts_csv_file failed for scan_id=%d: %s", scan_id, exc)

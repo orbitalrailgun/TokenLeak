@@ -1,15 +1,17 @@
 # TokenLeak — Mattermost Integration
 
-TokenLeak sends three types of notifications to Mattermost:
+TokenLeak sends four types of notifications to Mattermost:
 
-| Trigger | When |
-|---------|------|
-| **Per-alert** | Immediately when the agent calls `save_alert()` — one message per finding |
-| **Scan summary** | After each repository scan completes — severity breakdown + top findings |
-| **Large repo skipped** | When a repository exceeds `TOKENLEAK_MAX_REPO_SIZE_MB` and is skipped |
+| Trigger | When | Requires |
+|---------|------|----------|
+| **Per-alert** | Immediately when the agent calls `save_alert()` — one message per finding | URL + TOKEN |
+| **Scan summary** | After each commit scan completes — severity breakdown + top findings | URL + TOKEN |
+| **CSV report** | After the entire repository is scanned — CSV file with all alerts attached | URL + TOKEN + **CHANNEL_ID** |
+| **Large repo skipped** | When a repository exceeds `TOKENLEAK_MAX_REPO_SIZE_MB` and is skipped | URL + TOKEN |
 
-All three are optional. If `TOKENLEAK_MATTERMOST_URL` or `TOKENLEAK_MATTERMOST_TOKEN`
-is not set, notifications are silently disabled.
+All notifications are optional. If `TOKENLEAK_MATTERMOST_URL` or `TOKENLEAK_MATTERMOST_TOKEN`
+is not set, notifications are silently disabled. The CSV file upload additionally requires
+`TOKENLEAK_MATTERMOST_CHANNEL_ID` (see step 3).
 
 ---
 
@@ -52,8 +54,8 @@ Create a dedicated channel for TokenLeak alerts (public or private):
 
 ## 3. Get the Channel ID
 
-The Mattermost API identifies channels by their internal ID (26-character alphanumeric),
-not by display name. You need this ID for the `TOKENLEAK_MATTERMOST_CHANNEL` variable.
+The Mattermost file upload API requires the internal channel ID (26-character alphanumeric),
+not the display name. This is needed for `TOKENLEAK_MATTERMOST_CHANNEL_ID`.
 
 **Via the Mattermost UI:**
 
@@ -70,7 +72,10 @@ curl -s -H "Authorization: Bearer TOKEN" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])"
 ```
 
-The output is the channel ID to use in `.env`.
+The output is the 26-character channel ID.
+
+> `TOKENLEAK_MATTERMOST_CHANNEL_ID` is optional — if not set, CSV file uploads are skipped
+> and only text notifications are sent. Per-alert and scan-summary messages work without it.
 
 ---
 
@@ -83,8 +88,12 @@ TOKENLEAK_MATTERMOST_URL=https://mattermost.example.com
 # Bot token or Personal Access Token
 TOKENLEAK_MATTERMOST_TOKEN=your-token-here
 
-# Channel ID (26-character string from step 3)
-TOKENLEAK_MATTERMOST_CHANNEL=abcdef1234567890abcdef1234
+# Channel name for text notifications (per-alert and scan summary)
+TOKENLEAK_MATTERMOST_CHANNEL=tokenleak-alerts
+
+# Channel ID (26-character string from step 3) — required for CSV file uploads
+# If omitted, file attachments are skipped; text notifications still work.
+TOKENLEAK_MATTERMOST_CHANNEL_ID=abcdef1234567890abcdef1234
 ```
 
 ---
@@ -170,6 +179,28 @@ If more than 10 alerts are found, the first 10 are listed with a note:
 
 ---
 
+### CSV alerts report (file attachment)
+
+Sent once after the entire repository scan finishes (all commits processed). Requires
+`TOKENLEAK_MATTERMOST_CHANNEL_ID`.
+
+The post message:
+```
+📊 TokenLeak — CSV-отчёт | `repo` | scan_id=0 | 12 alert(s)
+[attached: tokenleak_repo_2026-06-19_scan0.csv]
+```
+
+The CSV includes all alerts for the repository with full context:
+`alert_id`, `repo_url`, `repo_provider`, `repo_name`, `commit_sha`, `commit_date`,
+`commit_message`, `commit_author`, `branch`, `scan_mode`, `scan_status`, `ai_model`,
+`input_tokens`, `output_tokens`, `tokens_used`, `scan_error`, `file_path`,
+`line_start`, `line_end`, `alert_type`, `severity`, `description`, `code_snippet`,
+`how_used`, `confirmation`, `is_false_positive`, `triggered_by`, `alert_created_at`.
+
+The file is UTF-8 with BOM and opens directly in Excel.
+
+---
+
 ### Large repo skipped
 
 ```
@@ -197,3 +228,5 @@ and before the structured scan summary.
 | `400 Bad Request` | Wrong channel ID | Channel ID must be the 26-char internal ID, not the display name |
 | `SSL` errors | Self-signed certificate | Set `TOKENLEAK_MATTERMOST_URL` to `http://` if TLS is not configured, or add the CA to the system trust store |
 | Per-alert messages arrive but no summary | Mattermost error during summary | Check application log for `send_scan_summary failed` warning |
+| Text notifications work but no CSV file | `TOKENLEAK_MATTERMOST_CHANNEL_ID` not set | Add the 26-char channel ID to `.env` as `TOKENLEAK_MATTERMOST_CHANNEL_ID` |
+| CSV upload returns `403` | Bot lacks file upload permission or wrong channel | Ensure bot is a member of the channel; verify channel ID is correct |

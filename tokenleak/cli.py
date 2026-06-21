@@ -378,6 +378,8 @@ def scan_repo(
             counter.set_commit_progress(_coffset + history_done, _ctotal)
             _post_scan(db, scan_id, mm, url, config)
 
+        _post_repo_scan(db, repo_id, mm, url)
+
     finally:
         counter.stop()
         ai_client.close()
@@ -386,13 +388,37 @@ def scan_repo(
 
 
 def _post_scan(db, scan_id: int, mm: Mattermost, url: str, config) -> None:
-    """Generate report and send Mattermost notification after a completed scan."""
+    """Generate report and send Mattermost text notification after each scan."""
     if config.report_output:
         md = gen_report(db, scan_id, url)
         write_report(md, config.report_output)
     if mm.enabled:
         alerts = db.list_alerts(scan_id)
         mm.send_scan_summary(url, alerts, scan_id)
+
+
+def _post_repo_scan(db, repo_id: int, mm: Mattermost, url: str) -> None:
+    """Send CSV of all alerts for this repo to Mattermost as a file attachment.
+
+    Called once per repo after all commits are scanned.
+    Skipped if Mattermost is not configured or no alerts were found.
+    """
+    if not mm.enabled:
+        return
+    try:
+        from tokenleak.report.csv_export import generate_alerts_csv
+        alerts = db.list_alerts_for_repo(repo_id)
+        if not alerts:
+            return
+        csv_content = generate_alerts_csv(db, repo_id=repo_id)
+        mm.send_alerts_csv_file(
+            repo_url=url,
+            scan_id=0,
+            csv_content=csv_content,
+            alert_count=len(alerts),
+        )
+    except Exception as exc:
+        log.warning("CSV upload to Mattermost failed for %s: %s", url, exc)
 
 
 def _guess_provider(url: str) -> str:
@@ -481,6 +507,47 @@ def cmd_status(config: Config) -> None:
     table.add_row("Last scan finished", s["last_scan_finished"] or "never")
 
     console.print(table)
+
+
+def cmd_alerts_export(
+    output: Optional[str],
+    repo_url: Optional[str],
+    scan_id: Optional[int],
+    ai_model: Optional[str],
+    config: Config,
+) -> None:
+    """Export alerts to CSV.
+
+    Filters applied in order: scan_id > repo_url > all repos.
+    If ai_model is given it narrows the repo_url filter (ignored with scan_id).
+    Output goes to stdout if --output is omitted.
+    """
+    import sys
+    from tokenleak.report.csv_export import generate_alerts_csv
+
+    db = create_db(config)
+    db.connect()
+    try:
+        repo_id: Optional[int] = None
+        if repo_url and scan_id is None:
+            repos = db.list_repos()
+            match = next((r for r in repos if r.url == repo_url), None)
+            if match is None:
+                console.print(f"[red]Repository not found in DB:[/red] {repo_url}")
+                return
+            repo_id = match.id
+
+        csv_content = generate_alerts_csv(db, scan_id=scan_id, repo_id=repo_id)
+    finally:
+        db.close()
+
+    if output and output != "-":
+        with open(output, "w", encoding="utf-8", newline="") as f:
+            f.write(csv_content)
+        alert_rows = csv_content.count("\r\n") - 1
+        console.print(f"[green]Exported {alert_rows} alert(s) to {output}[/green]")
+    else:
+        sys.stdout.write(csv_content)
 
 
 def cmd_mcp() -> None:
