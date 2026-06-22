@@ -265,20 +265,51 @@ def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
 
 
 @mcp.tool()
-def read_file_at_commit(commit_sha: str, path: str) -> str:
+def read_file_at_commit(commit_sha: str, path: str, offset: int = 0, limit: int = 0) -> str:
     """Read a file as it existed at a specific commit SHA.
 
     Useful for inspecting historical versions of files where a secret
     may have been committed and later deleted.
 
+    Large files MUST be read in chunks — always specify limit, then advance
+    with offset until the returned content is shorter than limit:
+
+        read_file_at_commit("abc123", "big.py", offset=0, limit=60000)
+        read_file_at_commit("abc123", "big.py", offset=60000, limit=60000)
+        ...
+
     Args:
         commit_sha: Full or abbreviated commit SHA.
-        path: Path relative to the repository root.
+        path:       Path relative to the repository root.
+        offset:     Character offset to start reading from (default 0).
+        limit:      Maximum chars to return from offset (0 = all remaining).
     """
     content = get_file_at_commit(_repo_path, commit_sha, path)
     if content is None:
         return f"Could not read {path} at {commit_sha}"
-    return content
+
+    total_chars = len(content)
+
+    if offset and offset >= total_chars:
+        return (
+            f"[Offset {offset:,} is past end of file — "
+            f"{total_chars:,} chars total in {path} at {commit_sha}]"
+        )
+
+    chunk = content[offset:] if offset else content
+
+    if limit and len(chunk) > limit:
+        chunk = chunk[:limit]
+        next_offset = offset + limit
+        remaining = total_chars - next_offset
+        chunk += (
+            f"\n\n[CHUNK: chars {offset:,}–{next_offset:,} of {total_chars:,} total. "
+            f"{remaining:,} chars remaining. "
+            f"Next chunk: read_file_at_commit(\"{commit_sha}\", \"{path}\", "
+            f"offset={next_offset}, limit={limit})]"
+        )
+
+    return chunk
 
 
 @mcp.tool()
@@ -493,12 +524,20 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "read_file_at_commit",
-            "description": "Read a file as it existed at a specific commit SHA",
+            "description": (
+                "Read a file as it existed at a specific commit SHA. "
+                "For large files use offset + limit to read in chunks: "
+                "read_file_at_commit(sha, path, offset=0, limit=60000), then "
+                "read_file_at_commit(sha, path, offset=60000, limit=60000), etc., "
+                "until the returned content is shorter than limit."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "commit_sha": {"type": "string"},
                     "path":       {"type": "string"},
+                    "offset":     {"type": "integer", "description": "Char offset to start reading from (default 0)"},
+                    "limit":      {"type": "integer", "description": "Max chars to return from offset (0 = all remaining)"},
                 },
                 "required": ["commit_sha", "path"],
             },

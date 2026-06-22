@@ -151,7 +151,7 @@ For EVERY confirmed finding call save_alert() with:
 
 Also check:
   - Commit messages for accidentally committed secrets
-  - Deleted files in git history (use read_file_at_commit)
+  - Deleted files in git history (use read_file_at_commit with offset/limit for large files)
   - CI/CD configs, deployment scripts, .env files
 
 Efficiency rules — IMPORTANT:
@@ -224,7 +224,11 @@ def _tool_status(name: str, args: dict) -> str:
         return f"⚙  read_file → {path}{suffix}"
     if name == "read_file_at_commit":
         sha = args.get("commit_sha", "")[:8]
-        return f"⚙  read_file_at_commit → {args.get('path', '')} @{sha}"
+        offset = args.get("offset", 0)
+        limit = args.get("limit", 0)
+        suffix = f" [offset={offset:,}]" if offset else ""
+        suffix += f" [limit={limit:,}]" if limit else ""
+        return f"⚙  read_file_at_commit → {args.get('path', '')} @{sha}{suffix}"
     if name == "save_alert":
         sev = args.get("severity", "?")
         fp = args.get("file_path", "")
@@ -361,8 +365,8 @@ def _agent_loop(
             cap = min(_MAX_TOOL_RESULT_CHARS, max(remaining_chars, 200))
             if len(result) > cap:
                 original_len = len(result)
-                # For read_file, give precise chunking instructions so the agent
-                # can continue reading from where we stopped.
+                # For file-reading tools, give precise chunking instructions so
+                # the agent can continue reading from where we stopped.
                 if tc.function.name == "read_file":
                     path_arg = args.get("path", "")
                     current_offset = int(args.get("offset", 0))
@@ -370,6 +374,16 @@ def _agent_loop(
                     chunk_hint = (
                         f" To read the next chunk: "
                         f"read_file(\"{path_arg}\", offset={next_offset}, limit={cap})"
+                    )
+                elif tc.function.name == "read_file_at_commit":
+                    path_arg = args.get("path", "")
+                    sha_arg = args.get("commit_sha", "")
+                    current_offset = int(args.get("offset", 0))
+                    next_offset = current_offset + cap
+                    chunk_hint = (
+                        f" To read the next chunk: "
+                        f"read_file_at_commit(\"{sha_arg}\", \"{path_arg}\", "
+                        f"offset={next_offset}, limit={cap})"
                     )
                 else:
                     chunk_hint = ""
