@@ -211,21 +211,25 @@ def get_notes() -> str:
     return "\n\n---\n\n".join(notes)
 
 
+_DEFAULT_READ_LIMIT = 50_000  # default chunk size; leaves room for [CHUNK] footer under 60 K cap
+
+
 @mcp.tool()
 def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
     """Read a file from the cloned repository (current HEAD).
 
-    Large files MUST be read in chunks — always specify limit, and use offset
-    to advance through the file:
+    Returns at most 50,000 characters by default. If the file is larger, the
+    result ends with a [CHUNK] footer that shows the exact offset to pass for
+    the next call.  Use offset to advance through the file:
 
-        read_file("large.py", offset=0, limit=50000)        # chunk 1
-        read_file("large.py", offset=50000, limit=50000)    # chunk 2
+        read_file("large.py")                                # chunk 1 (auto limit)
+        read_file("large.py", offset=50000)                  # chunk 2
         ...repeat until returned content is shorter than limit (= last chunk).
 
     Args:
         path:   Path relative to the repository root.
         offset: Character offset to start reading from (default 0 = beginning).
-        limit:  Maximum chars to return from offset (0 = all remaining from offset).
+        limit:  Maximum chars to return (default 50,000; set explicitly to override).
     """
     full = _repo_path / path
     if not full.exists():
@@ -234,7 +238,7 @@ def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
         return (
             f"File too large to read at once: {path} "
             f"({full.stat().st_size // 1024:,} KB). "
-            f"Use read_file(\"{path}\", offset=0, limit=60000) to read in chunks."
+            f"Use read_file(\"{path}\", offset=0, limit=50000) to read in chunks."
         )
     try:
         content = full.read_text(errors="replace")
@@ -250,15 +254,16 @@ def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
         )
 
     chunk = content[offset:] if offset else content
+    effective_limit = limit or _DEFAULT_READ_LIMIT
 
-    if limit and len(chunk) > limit:
-        chunk = chunk[:limit]
-        next_offset = offset + limit
+    if len(chunk) > effective_limit:
+        chunk = chunk[:effective_limit]
+        next_offset = offset + effective_limit
         remaining = total_chars - next_offset
         chunk += (
             f"\n\n[CHUNK: chars {offset:,}–{next_offset:,} of {total_chars:,} total. "
             f"{remaining:,} chars remaining. "
-            f"Next chunk: read_file(\"{path}\", offset={next_offset}, limit={limit})]"
+            f"Next chunk: read_file(\"{path}\", offset={next_offset}, limit={effective_limit})]"
         )
 
     return chunk
@@ -271,18 +276,18 @@ def read_file_at_commit(commit_sha: str, path: str, offset: int = 0, limit: int 
     Useful for inspecting historical versions of files where a secret
     may have been committed and later deleted.
 
-    Large files MUST be read in chunks — always specify limit, then advance
-    with offset until the returned content is shorter than limit:
+    Returns at most 50,000 characters by default. If the file is larger, the
+    result ends with a [CHUNK] footer showing the offset for the next call:
 
-        read_file_at_commit("abc123", "big.py", offset=0, limit=60000)
-        read_file_at_commit("abc123", "big.py", offset=60000, limit=60000)
+        read_file_at_commit("abc123", "big.py")               # chunk 1 (auto limit)
+        read_file_at_commit("abc123", "big.py", offset=50000) # chunk 2
         ...
 
     Args:
         commit_sha: Full or abbreviated commit SHA.
         path:       Path relative to the repository root.
         offset:     Character offset to start reading from (default 0).
-        limit:      Maximum chars to return from offset (0 = all remaining).
+        limit:      Maximum chars to return (default 50,000; set explicitly to override).
     """
     content = get_file_at_commit(_repo_path, commit_sha, path)
     if content is None:
@@ -297,16 +302,17 @@ def read_file_at_commit(commit_sha: str, path: str, offset: int = 0, limit: int 
         )
 
     chunk = content[offset:] if offset else content
+    effective_limit = limit or _DEFAULT_READ_LIMIT
 
-    if limit and len(chunk) > limit:
-        chunk = chunk[:limit]
-        next_offset = offset + limit
+    if len(chunk) > effective_limit:
+        chunk = chunk[:effective_limit]
+        next_offset = offset + effective_limit
         remaining = total_chars - next_offset
         chunk += (
             f"\n\n[CHUNK: chars {offset:,}–{next_offset:,} of {total_chars:,} total. "
             f"{remaining:,} chars remaining. "
             f"Next chunk: read_file_at_commit(\"{commit_sha}\", \"{path}\", "
-            f"offset={next_offset}, limit={limit})]"
+            f"offset={next_offset}, limit={effective_limit})]"
         )
 
     return chunk
@@ -504,17 +510,17 @@ TOOL_SCHEMAS: list[dict] = [
             "name": "read_file",
             "description": (
                 "Read a file from the cloned repository (current HEAD). "
-                "For large files use offset + limit to read in chunks: "
-                "read_file(path, offset=0, limit=60000), then "
-                "read_file(path, offset=60000, limit=60000), etc., "
-                "until the returned content is shorter than limit."
+                "Returns at most 50,000 chars by default. "
+                "If the file is larger, the result ends with a [CHUNK] footer "
+                "that shows the exact offset for the next call. "
+                "Call repeatedly with that offset until no [CHUNK] footer appears."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path":   {"type": "string"},
                     "offset": {"type": "integer", "description": "Char offset to start reading from (default 0)"},
-                    "limit":  {"type": "integer", "description": "Max chars to return from offset (0 = all remaining)"},
+                    "limit":  {"type": "integer", "description": "Max chars to return (default 50,000)"},
                 },
                 "required": ["path"],
             },
@@ -526,10 +532,10 @@ TOOL_SCHEMAS: list[dict] = [
             "name": "read_file_at_commit",
             "description": (
                 "Read a file as it existed at a specific commit SHA. "
-                "For large files use offset + limit to read in chunks: "
-                "read_file_at_commit(sha, path, offset=0, limit=60000), then "
-                "read_file_at_commit(sha, path, offset=60000, limit=60000), etc., "
-                "until the returned content is shorter than limit."
+                "Returns at most 50,000 chars by default. "
+                "If the file is larger, the result ends with a [CHUNK] footer "
+                "that shows the exact offset for the next call. "
+                "Call repeatedly with that offset until no [CHUNK] footer appears."
             ),
             "parameters": {
                 "type": "object",
@@ -537,7 +543,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "commit_sha": {"type": "string"},
                     "path":       {"type": "string"},
                     "offset":     {"type": "integer", "description": "Char offset to start reading from (default 0)"},
-                    "limit":      {"type": "integer", "description": "Max chars to return from offset (0 = all remaining)"},
+                    "limit":      {"type": "integer", "description": "Max chars to return (default 50,000)"},
                 },
                 "required": ["commit_sha", "path"],
             },

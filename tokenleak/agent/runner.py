@@ -72,11 +72,12 @@ likely secrets by local entropy and regex analysis). Your task:
 1. For EACH line or block of lines that contains a confirmed secret, token,
    password, PII, or corporate-sensitive value — call save_alert().
 2. If you need surrounding context, use read_file() to read the full file.
-   For large files read in chunks using the offset parameter:
-     read_file("file.py", offset=0, limit=60000)       # first chunk
-     read_file("file.py", offset=60000, limit=60000)   # next chunk
-     …until the returned content is shorter than limit (= last chunk reached).
-   A [CHUNK] or [TRUNCATED] footer in the result tells you the next offset to use.
+   Files larger than 50,000 chars are automatically returned as chunks — the
+   result ends with a [CHUNK] footer that tells you the exact offset for the
+   next call. Keep calling with that offset until no footer appears (= last chunk):
+     read_file("file.py")                    # first chunk (auto-limited to 50 K)
+     read_file("file.py", offset=50000)      # next chunk
+     …until the returned content has no [CHUNK] footer (= end of file reached).
 3. When finished, reply with a plain-text summary and stop (no more tool calls).
    Do NOT call send_mattermost() — per-alert notifications are sent automatically
    when you call save_alert(), and the overall repo summary is sent separately.
@@ -135,12 +136,12 @@ _PASS2_PROMPT = """You are now performing the DEEP SCAN pass on this repository.
 Start by reading your Pass 1 notes via get_notes(), then systematically inspect
 each high-risk file with read_file().
 
-IMPORTANT — large files must be read in chunks:
-  read_file("large.py", offset=0, limit=60000)       # first chunk
-  read_file("large.py", offset=60000, limit=60000)   # next chunk
-  …repeat until the returned content is shorter than limit (= end of file).
-A [CHUNK] footer in the result tells you the exact offset for the next call.
-Always use limit=60000 (or smaller) — never call read_file without a limit.
+IMPORTANT — large files are automatically chunked:
+  read_file("large.py")                 # first chunk (auto-limited to 50 K chars)
+  read_file("large.py", offset=50000)   # next chunk
+  …repeat until the result has no [CHUNK] footer (= end of file reached).
+The [CHUNK] footer at the end of each result tells you the exact offset to use next.
+You do NOT need to specify limit — the tool applies a safe default automatically.
 
 For EVERY confirmed finding call save_alert() with:
   - The exact file path and line numbers
@@ -151,7 +152,7 @@ For EVERY confirmed finding call save_alert() with:
 
 Also check:
   - Commit messages for accidentally committed secrets
-  - Deleted files in git history (use read_file_at_commit with offset/limit for large files)
+  - Deleted files in git history (use read_file_at_commit — also auto-chunked at 50 K chars)
   - CI/CD configs, deployment scripts, .env files
 
 Efficiency rules — IMPORTANT:
