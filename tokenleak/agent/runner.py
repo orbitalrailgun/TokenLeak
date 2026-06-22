@@ -41,7 +41,26 @@ from tokenleak.scanner.walker import (
 
 log = get_logger()
 
-_MAX_DIFF_CHARS = 400_000  # ~100K tokens; stays well under GLM-4.7's 202K-token limit
+# Rough chars-per-token estimate used for context budget calculations.
+_CHARS_PER_TOKEN = 4
+
+# Hard cap on a single tool-call result stored in the conversation history.
+# The actual tool executes without this limit — only the stored reply is capped.
+# This prevents a single large read_file() from filling the entire context window.
+_MAX_TOOL_RESULT_CHARS = 60_000  # ≈15K tokens
+
+# Headroom reserved for the model's own responses and API overhead.
+# We stop the loop proactively when messages grow within this margin of the limit.
+_CONTEXT_HEADROOM_TOKENS = 8_000
+
+
+def _max_diff_chars(context_window: int) -> int:
+    """Return the char budget for the initial diff user message.
+
+    Uses 55% of the context window for the diff itself, leaving the rest for
+    the system prompt, tool schemas, and the agent's tool-call iterations.
+    """
+    return int(context_window * 0.55) * _CHARS_PER_TOKEN
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -53,6 +72,11 @@ likely secrets by local entropy and regex analysis). Your task:
 1. For EACH line or block of lines that contains a confirmed secret, token,
    password, PII, or corporate-sensitive value — call save_alert().
 2. If you need surrounding context, use read_file() to read the full file.
+   For large files read in chunks using the offset parameter:
+     read_file("file.py", offset=0, limit=60000)       # first chunk
+     read_file("file.py", offset=60000, limit=60000)   # next chunk
+     …until the returned content is shorter than limit (= last chunk reached).
+   A [CHUNK] or [TRUNCATED] footer in the result tells you the next offset to use.
 3. When finished, reply with a plain-text summary and stop (no more tool calls).
    Do NOT call send_mattermost() — per-alert notifications are sent automatically
    when you call save_alert(), and the overall repo summary is sent separately.
@@ -110,6 +134,13 @@ _PASS2_PROMPT = """You are now performing the DEEP SCAN pass on this repository.
 
 Start by reading your Pass 1 notes via get_notes(), then systematically inspect
 each high-risk file with read_file().
+
+IMPORTANT — large files must be read in chunks:
+  read_file("large.py", offset=0, limit=60000)       # first chunk
+  read_file("large.py", offset=60000, limit=60000)   # next chunk
+  …repeat until the returned content is shorter than limit (= end of file).
+A [CHUNK] footer in the result tells you the exact offset for the next call.
+Always use limit=60000 (or smaller) — never call read_file without a limit.
 
 For EVERY confirmed finding call save_alert() with:
   - The exact file path and line numbers
@@ -185,7 +216,12 @@ def _call_tool(name: str, arguments: dict) -> str:
 def _tool_status(name: str, args: dict) -> str:
     """Format a short human-readable status string for an MCP tool call."""
     if name == "read_file":
-        return f"⚙  read_file → {args.get('path', '')}"
+        path = args.get("path", "")
+        offset = args.get("offset", 0)
+        limit = args.get("limit", 0)
+        suffix = f" [offset={offset:,}]" if offset else ""
+        suffix += f" [limit={limit:,}]" if limit else ""
+        return f"⚙  read_file → {path}{suffix}"
     if name == "read_file_at_commit":
         sha = args.get("commit_sha", "")[:8]
         return f"⚙  read_file_at_commit → {args.get('path', '')} @{sha}"
@@ -213,6 +249,11 @@ def _tool_status(name: str, args: dict) -> str:
     return f"⚙  {name}"
 
 
+def _msg_chars(m: dict) -> int:
+    """Rough char count of a message dict — used for context budget tracking."""
+    return len(m.get("content") or "") + len(json.dumps(m.get("tool_calls") or ""))
+
+
 def _agent_loop(
     client,
     model: str,
@@ -220,19 +261,42 @@ def _agent_loop(
     user_message: str,
     tools: list[dict],
     max_iterations: int,
+    context_window: int = 262144,
     on_tokens: Optional[Callable[[int, int], None]] = None,
     on_status: Optional[Callable[[str], None]] = None,
 ) -> tuple[int, int, str]:
-    """Run one agent conversation. Returns (input_tokens, output_tokens, final_text)."""
+    """Run one agent conversation. Returns (input_tokens, output_tokens, final_text).
+
+    context_window: model's token limit — used to cap tool results and stop early
+    before the API rejects the request.
+    """
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ]
+    # Context budget in chars (rough estimate: 4 chars per token).
+    # Reserve headroom so we stop before the API sees an over-limit request.
+    _budget_chars = (context_window - _CONTEXT_HEADROOM_TOKENS) * _CHARS_PER_TOKEN
+
+    # Track total conversation size incrementally (avoids O(n²) re-serialisation).
+    _total_chars = sum(_msg_chars(m) for m in messages)
+
     total_input = 0
     total_output = 0
     final_text = ""
 
     for iteration in range(max_iterations):
+        # Proactive check: if messages already fill the budget, stop before sending.
+        if _total_chars >= _budget_chars:
+            log.warning(
+                "Context budget exhausted before iteration %d (~%d chars, limit ~%d) — "
+                "stopping agent loop. Alerts saved so far are preserved.",
+                iteration + 1, _total_chars, _budget_chars,
+            )
+            if on_status:
+                on_status("⚠  context budget full — stopping early")
+            break
+
         if on_status:
             on_status(f"🧠 thinking… (iteration {iteration + 1})")
         try:
@@ -250,10 +314,12 @@ def _agent_loop(
         total_input += pt
         total_output += ct
         if on_tokens:
-            on_tokens(pt, ct)  # incremental per-call (input, output) — counter.add() accumulates
+            on_tokens(pt, ct)
 
         msg = response.choices[0].message
-        messages.append(msg.model_dump(exclude_none=True))
+        assistant_dict = msg.model_dump(exclude_none=True)
+        _total_chars += _msg_chars(assistant_dict)
+        messages.append(assistant_dict)
 
         if not msg.tool_calls:
             final_text = msg.content or ""
@@ -288,7 +354,38 @@ def _agent_loop(
             if on_status:
                 on_status(_tool_status(tc.function.name, args))
             result = _call_tool(tc.function.name, args)
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+            # Cap the result stored in history to prevent a single large tool response
+            # (e.g. read_file on a huge file) from exhausting the entire context window.
+            remaining_chars = _budget_chars - _total_chars - 500  # 500-char headroom
+            cap = min(_MAX_TOOL_RESULT_CHARS, max(remaining_chars, 200))
+            if len(result) > cap:
+                original_len = len(result)
+                # For read_file, give precise chunking instructions so the agent
+                # can continue reading from where we stopped.
+                if tc.function.name == "read_file":
+                    path_arg = args.get("path", "")
+                    current_offset = int(args.get("offset", 0))
+                    next_offset = current_offset + cap
+                    chunk_hint = (
+                        f" To read the next chunk: "
+                        f"read_file(\"{path_arg}\", offset={next_offset}, limit={cap})"
+                    )
+                else:
+                    chunk_hint = ""
+                result = (
+                    result[:cap]
+                    + f"\n\n[... TRUNCATED — {original_len:,} chars total, "
+                    f"stored {cap:,} chars to stay within context budget.{chunk_hint} ...]"
+                )
+                log.warning(
+                    "Tool result for %s truncated: %d→%d chars (context budget)",
+                    tc.function.name, original_len, cap,
+                )
+
+            tool_msg = {"role": "tool", "tool_call_id": tc.id, "content": result}
+            _total_chars += _msg_chars(tool_msg)
+            messages.append(tool_msg)
     else:
         log.warning("Agent reached max_iterations=%d", max_iterations)
 
@@ -521,8 +618,10 @@ def _format_diff_for_agent(
     author: str,
     message: str,
     candidates: DiffAdditions,
+    context_window: int = 262144,
 ) -> str:
     """Format pre-filtered diff additions as a readable block for the agent."""
+    max_chars = _max_diff_chars(context_window)
     header = [
         f"## Commit `{sha[:12]}` by {author}",
         f"## Message: {message!r}",
@@ -538,13 +637,13 @@ def _format_diff_for_agent(
         file_parts.append("")
         file_str = "\n".join(file_parts)
 
-        if len(file_str) > _MAX_DIFF_CHARS // 2:
+        if len(file_str) > max_chars // 2:
             # Single file too large on its own — skip and continue to next file
             parts.append(f"### File: `{file_path}` [SKIPPED — file diff too large ({len(file_str):,} chars)]")
             log.warning("Skipping large file in diff: %s (%d chars)", file_path, len(file_str))
             continue
 
-        if total_chars + len(file_str) > _MAX_DIFF_CHARS:
+        if total_chars + len(file_str) > max_chars:
             # Accumulated content too large — stop here
             parts.append(f"### File: `{file_path}` [OMITTED — cumulative diff budget exhausted]")
             log.warning("Diff budget exhausted before %s (accumulated %d chars)", file_path, total_chars)
@@ -692,7 +791,10 @@ def _run_diff_scan(
         if on_status:
             on_status(f"🧪 {len(candidates)}/{len(additions)} files passed prefilter → sending to AI")
 
-        diff_text = _format_diff_for_agent(commit_sha, commit_author, commit_message, candidates)
+        diff_text = _format_diff_for_agent(
+            commit_sha, commit_author, commit_message, candidates,
+            context_window=config.ai_context_window,
+        )
         total_in, total_out, _ = _agent_loop(
             client=client,
             model=config.ai_model,
@@ -700,6 +802,7 @@ def _run_diff_scan(
             user_message=diff_text,
             tools=mcp_server.TOOL_SCHEMAS,
             max_iterations=config.ai_max_iterations,
+            context_window=config.ai_context_window,
             on_tokens=on_tokens,
             on_status=on_status,
         )
@@ -809,6 +912,7 @@ def _run_full_scan(
         ),
         tools=mcp_server.TOOL_SCHEMAS,
         max_iterations=config.ai_max_iterations,
+        context_window=config.ai_context_window,
         on_tokens=on_tokens,
         on_status=on_status,
     )
@@ -825,6 +929,7 @@ def _run_full_scan(
         user_message="Begin the deep scan. Start by reading your notes from Pass 1.",
         tools=mcp_server.TOOL_SCHEMAS,
         max_iterations=config.ai_max_iterations,
+        context_window=config.ai_context_window,
         on_tokens=on_tokens,
         on_status=on_status,
     )

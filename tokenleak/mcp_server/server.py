@@ -212,25 +212,56 @@ def get_notes() -> str:
 
 
 @mcp.tool()
-def read_file(path: str, limit: int = 0) -> str:
+def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
     """Read a file from the cloned repository (current HEAD).
 
+    Large files MUST be read in chunks — always specify limit, and use offset
+    to advance through the file:
+
+        read_file("large.py", offset=0, limit=50000)        # chunk 1
+        read_file("large.py", offset=50000, limit=50000)    # chunk 2
+        ...repeat until returned content is shorter than limit (= last chunk).
+
     Args:
-        path: Path relative to the repository root.
-        limit: Maximum characters to return (0 = no limit).
+        path:   Path relative to the repository root.
+        offset: Character offset to start reading from (default 0 = beginning).
+        limit:  Maximum chars to return from offset (0 = all remaining from offset).
     """
     full = _repo_path / path
     if not full.exists():
         return f"File not found: {path}"
     if full.stat().st_size > 10 * 1024 * 1024:
-        return f"File too large to read: {path}"
+        return (
+            f"File too large to read at once: {path} "
+            f"({full.stat().st_size // 1024:,} KB). "
+            f"Use read_file(\"{path}\", offset=0, limit=60000) to read in chunks."
+        )
     try:
         content = full.read_text(errors="replace")
-        if limit and len(content) > limit:
-            return content[:limit] + f"\n[... truncated at {limit} chars]"
-        return content
     except OSError as exc:
         return f"Cannot read {path}: {exc}"
+
+    total_chars = len(content)
+
+    if offset and offset >= total_chars:
+        return (
+            f"[Offset {offset:,} is past end of file — "
+            f"{total_chars:,} chars total in {path}]"
+        )
+
+    chunk = content[offset:] if offset else content
+
+    if limit and len(chunk) > limit:
+        chunk = chunk[:limit]
+        next_offset = offset + limit
+        remaining = total_chars - next_offset
+        chunk += (
+            f"\n\n[CHUNK: chars {offset:,}–{next_offset:,} of {total_chars:,} total. "
+            f"{remaining:,} chars remaining. "
+            f"Next chunk: read_file(\"{path}\", offset={next_offset}, limit={limit})]"
+        )
+
+    return chunk
 
 
 @mcp.tool()
@@ -440,12 +471,19 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a file from the cloned repository (current HEAD)",
+            "description": (
+                "Read a file from the cloned repository (current HEAD). "
+                "For large files use offset + limit to read in chunks: "
+                "read_file(path, offset=0, limit=60000), then "
+                "read_file(path, offset=60000, limit=60000), etc., "
+                "until the returned content is shorter than limit."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path":  {"type": "string"},
-                    "limit": {"type": "integer", "description": "Max chars to return (0 = no limit)"},
+                    "path":   {"type": "string"},
+                    "offset": {"type": "integer", "description": "Char offset to start reading from (default 0)"},
+                    "limit":  {"type": "integer", "description": "Max chars to return from offset (0 = all remaining)"},
                 },
                 "required": ["path"],
             },
