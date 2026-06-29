@@ -243,6 +243,10 @@ class FileResult:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+_MAX_PREFILTER_LINE_LEN = 2_000   # truncate longer lines — prevents O(n²) regex on minified code
+_MAX_PREFILTER_LINES = 2_000      # stop after this many lines per file — enough to detect secrets
+
+
 def filter_file(path: Path, content: str) -> FileResult:
     """Check a single file. Always returns a FileResult; caller checks is_candidate."""
     # Template/example files are always excluded — no AI analysis needed.
@@ -257,6 +261,15 @@ def filter_file(path: Path, content: str) -> FileResult:
     result = FileResult(path=path, is_suspicious_name=suspicious_name)
 
     for lineno, line in enumerate(content.splitlines(), start=1):
+        if lineno > _MAX_PREFILTER_LINES:
+            break
+
+        # Truncate very long lines (minified JS etc.) before running regex patterns.
+        # Without this cap, a 100 KB line can trigger catastrophic backtracking in
+        # the C regex engine, holding the GIL and making the process unresponsive.
+        if len(line) > _MAX_PREFILTER_LINE_LEN:
+            line = line[:_MAX_PREFILTER_LINE_LEN]
+
         # Skip lines that are clearly placeholder/template values or boilerplate
         if _is_placeholder_line(line):
             continue

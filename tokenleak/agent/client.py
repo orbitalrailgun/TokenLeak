@@ -64,12 +64,15 @@ def is_billing_error(exc: Exception) -> bool:
     return False
 
 
+_API_TIMEOUT = 300.0  # seconds; prevents indefinite hang when the API is slow to respond
+
+
 def build_client(config: Config) -> OpenAI:
     if config.ai_provider == "ollama":
         base_url = config.ai_api_url or "http://localhost:11434/v1"
-        return OpenAI(base_url=base_url, api_key="ollama")
+        return OpenAI(base_url=base_url, api_key="ollama", timeout=_API_TIMEOUT)
     # OpenAI (or any OpenAI-compatible provider)
-    kwargs: dict[str, Any] = {"api_key": config.ai_api_key}
+    kwargs: dict[str, Any] = {"api_key": config.ai_api_key, "timeout": _API_TIMEOUT}
     if config.ai_api_url:
         kwargs["base_url"] = config.ai_api_url
     return OpenAI(**kwargs)

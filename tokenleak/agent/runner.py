@@ -54,13 +54,18 @@ _MAX_TOOL_RESULT_CHARS = 60_000  # ≈15K tokens
 _CONTEXT_HEADROOM_TOKENS = 8_000
 
 
+_MAX_DIFF_CHARS_ABSOLUTE = 150_000  # ≈37.5K tokens — hard cap regardless of context size
+
+
 def _max_diff_chars(context_window: int) -> int:
     """Return the char budget for the initial diff user message.
 
-    Uses 55% of the context window for the diff itself, leaving the rest for
-    the system prompt, tool schemas, and the agent's tool-call iterations.
+    Uses 40% of the context window but never exceeds the absolute cap.
+    The cap prevents sending absurdly large prompts when context_window is
+    set larger than the model actually supports (e.g. default 262144 vs
+    GPT-4o's real 128K limit), which would cause multi-minute API hangs.
     """
-    return int(context_window * 0.55) * _CHARS_PER_TOKEN
+    return min(int(context_window * 0.40) * _CHARS_PER_TOKEN, _MAX_DIFF_CHARS_ABSOLUTE)
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -304,6 +309,10 @@ def _agent_loop(
 
         if on_status:
             on_status(f"🧠 thinking… (iteration {iteration + 1})")
+        log.info(
+            "AI API call: model=%s iteration=%d approx_chars=%d (budget=%d)",
+            model, iteration + 1, _total_chars, _budget_chars,
+        )
         try:
             response = chat(client, model, messages, tools=tools)
         except ContextWindowExceededError as exc:
@@ -315,6 +324,16 @@ def _agent_loop(
             if on_status:
                 on_status("⚠  context window full — stopping early")
             break
+        except Exception as exc:
+            log.error(
+                "AI API call failed at iteration %d (model=%s): %s",
+                iteration + 1, model, exc, exc_info=True,
+            )
+            raise
+        log.info(
+            "AI API response received: iteration=%d model=%s",
+            iteration + 1, model,
+        )
         pt, ct = extract_usage(response)
         total_input += pt
         total_output += ct
@@ -776,6 +795,7 @@ def _run_diff_scan(
     )
     system = _load_agent_md(config) or _DEFAULT_SYSTEM
 
+    log.info("[scan %d] Extracting diff for %s…", scan_id, commit_sha[:8])
     if on_status:
         on_status(f"📂 extracting diff {commit_sha[:8]}…")
     additions = get_commit_diff_additions(repo_path, commit_sha)
@@ -785,6 +805,7 @@ def _run_diff_scan(
             on_status("⏭  empty diff — skipped")
         return 0
 
+    log.info("[scan %d] Diff %s: %d file(s) with additions", scan_id, commit_sha[:8], len(additions))
     if on_file_progress:
         on_file_progress(0, len(additions))
     if on_status:
@@ -810,6 +831,10 @@ def _run_diff_scan(
             commit_sha, commit_author, commit_message, candidates,
             context_window=config.ai_context_window,
         )
+        log.info(
+            "[scan %d] Diff formatted: %d chars (cap=%d) — starting agent loop",
+            scan_id, len(diff_text), _max_diff_chars(config.ai_context_window),
+        )
         total_in, total_out, _ = _agent_loop(
             client=client,
             model=config.ai_model,
@@ -821,6 +846,7 @@ def _run_diff_scan(
             on_tokens=on_tokens,
             on_status=on_status,
         )
+        log.info("[scan %d] Agent loop finished: in=%d out=%d", scan_id, total_in, total_out)
 
     if config.ocr_model:
         ocr_in, ocr_out = _run_ocr_for_commit(
@@ -906,14 +932,16 @@ def _run_full_scan(
     )
     system = _load_agent_md(config) or _DEFAULT_SYSTEM
 
+    log.info("[scan %d] Full scan — loading file tree & commit log for %s", scan_id, commit_sha or "HEAD")
     if on_status:
         on_status("📁 loading file tree & commit log…")
     file_tree = _walker_file_tree(repo_path)
     commit_log = _walker_commit_log(repo_path, limit=200)
+    log.info("[scan %d] File tree: %d chars, commit log: %d chars", scan_id, len(file_tree), len(commit_log))
 
     if on_file_progress:
         on_file_progress(0, 2)
-    log.info("[scan %d] Full scan — Pass 1 (map)", scan_id)
+    log.info("[scan %d] Full scan — Pass 1 (risk map)", scan_id)
     if on_status:
         on_status("🗺  Pass 1 — building risk map…")
     in1, out1, _ = _agent_loop(
@@ -931,10 +959,11 @@ def _run_full_scan(
         on_tokens=on_tokens,
         on_status=on_status,
     )
+    log.info("[scan %d] Full scan — Pass 1 done: in=%d out=%d", scan_id, in1, out1)
 
     if on_file_progress:
         on_file_progress(1, 2)
-    log.info("[scan %d] Full scan — Pass 2 (deep scan)", scan_id)
+    log.info("[scan %d] Full scan — Pass 2 (deep file scan)", scan_id)
     if on_status:
         on_status("🔬 Pass 2 — deep file scan…")
     in2, out2, _ = _agent_loop(
@@ -948,6 +977,7 @@ def _run_full_scan(
         on_tokens=on_tokens,
         on_status=on_status,
     )
+    log.info("[scan %d] Full scan — Pass 2 done: in=%d out=%d", scan_id, in2, out2)
 
     if on_file_progress:
         on_file_progress(2, 2)

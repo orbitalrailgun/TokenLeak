@@ -211,18 +211,41 @@ def scan_repo(
             return
 
         # ── Normal scan / rescan ───────────────────────────────────────────────
-        # Determine which commits have already been successfully scanned
+        # Determine which commits have already been successfully scanned.
+        #
+        # first_run is True when no completed FULL scan exists for this repo+model.
+        # Using "any done scan" would be wrong: if the first run was interrupted
+        # after some diff history commits finished (but before the full HEAD scan
+        # completed), done_shas would be non-empty and first_run would be False —
+        # causing the resumed run to skip the full HEAD scan entirely.
         done_shas: set[str] = set()
+        full_scan_done = False
+        _has_legacy_done = False   # DONE scans where scan_mode is NULL (old DB format)
         if not rescan:
             for s in db.list_scans(repo_id=repo_id):
                 # Include scans for the current model AND legacy scans where
                 # ai_model is NULL (created before per-model tracking was added).
-                if s.status == ScanStatus.DONE and (
-                    s.ai_model == config.ai_model or s.ai_model is None
-                ):
+                if not (s.ai_model == config.ai_model or s.ai_model is None):
+                    continue
+                if s.status == ScanStatus.DONE:
                     done_shas.add(s.commit_sha)
+                    if s.scan_mode == "full":
+                        full_scan_done = True
+                    elif s.scan_mode is None:
+                        # Old DB: scan_mode column was added via ALTER TABLE → NULL for
+                        # pre-existing rows.  We cannot tell full from diff, so treat any
+                        # legacy DONE scan as evidence that the first full scan completed.
+                        _has_legacy_done = True
 
-        first_run = rescan or not done_shas
+        if not full_scan_done and _has_legacy_done:
+            full_scan_done = True   # backward compat: old DB → assume first run was done
+
+        first_run = rescan or not full_scan_done
+        log.info(
+            "Repo %s: %d DONE commit(s) in DB, full_scan_done=%s → %s",
+            url, len(done_shas), full_scan_done,
+            "first-run (full+history)" if first_run else f"incremental ({len([c for c in all_commits if c.sha not in done_shas])} new commits)",
+        )
 
         if first_run:
             # Pre-compute history so we know the total commit count up front
@@ -337,17 +360,36 @@ def scan_repo(
 
         history_total = len(history)
         history_done = 0
+        log.info("History loop: %d commit(s) to process for %s", history_total, url)
         for commit in history:
             if commit.sha in done_shas:
                 log.info("Skipping already-scanned commit %s in %s", commit.sha[:8], url)
+                history_done += 1
+                counter.set_commit_progress(_coffset + history_done, _ctotal)
                 continue
+
+            log.info("Starting diff scan %d/%d: %s in %s",
+                     history_done + 1, history_total, commit.sha[:8], url)
 
             scan_id = db.create_scan(
                 repo_id, commit.sha, commit.message, commit.author, commit.date,
                 scan_mode="diff", ai_model=config.ai_model,
             )
+
+            # Detect if we're resuming an interrupted scan for this commit
+            existing = db.get_scan_by_id(scan_id)
+            if existing and existing.status == ScanStatus.RUNNING:
+                log.warning(
+                    "Resuming previously interrupted scan %d for %s@%s",
+                    scan_id, url, commit.sha[:8],
+                )
+
             db.start_scan(scan_id)
+
+            log.debug("Getting diff line count for %s…", commit.sha[:8])
             added_lines = get_diff_added_lines(repo_path, commit.sha)
+            log.info("Diff %s: %d added lines", commit.sha[:8], added_lines)
+
             counter.set_commit(
                 commit.sha,
                 author=commit.author,
@@ -367,15 +409,17 @@ def scan_repo(
                     triggered_by=triggered_by, client=ai_client,
                 )
                 db.finish_scan(scan_id, ScanStatus.DONE)
+                log.info("Diff scan done: %s (scan_id=%d)", commit.sha[:8], scan_id)
             except InsufficientFundsError as exc:
                 log.critical("API funds exhausted at %s@%s: %s", url, commit.sha[:8], exc)
                 db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
                 raise
             except Exception as exc:
-                log.error("Scan error for %s@%s: %s", url, commit.sha[:8], exc)
+                log.error("Scan error for %s@%s: %s", url, commit.sha[:8], exc, exc_info=True)
                 db.finish_scan(scan_id, ScanStatus.ERROR, error=str(exc))
             history_done += 1
             counter.set_commit_progress(_coffset + history_done, _ctotal)
+            log.debug("Sending post-scan notifications for scan_id=%d…", scan_id)
             _post_scan(db, scan_id, mm, url, config)
 
         _post_repo_scan(db, repo_id, mm, url)
